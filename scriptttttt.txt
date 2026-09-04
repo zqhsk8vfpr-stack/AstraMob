@@ -1,4 +1,3 @@
-
 loadstring(game:HttpGet("https://raw.githubusercontent.com/zqhsk8vfpr-stack/Astra/main/astra%20ui"))()
 
 local Players = game:GetService("Players")
@@ -500,27 +499,13 @@ end
 local camLockActive = false
 local currentTarget = nil
 local SilentTarget = nil
+local previousKeyState = false
 
 local isTouching = false
 if UserInputService.TouchEnabled then
     UserInputService.TouchStarted:Connect(function() isTouching = true end)
     UserInputService.TouchEnded:Connect(function() isTouching = false end)
 end
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-    if getgenv().Activation ~= "Toggle" then return end
-    local key = getKeyCode(getgenv().AimbotKey or "E")
-    if input.KeyCode == key then
-        if getgenv().Enabled then
-            camLockActive = not camLockActive
-            if not camLockActive then
-                currentTarget = nil
-                SilentTarget = nil
-            end
-        end
-    end
-end)
 
 local remote = ReplicatedStorage:FindFirstChild("MAINEVENT")
 if remote and not remote:IsA("RemoteEvent") then remote = nil end
@@ -533,61 +518,32 @@ end)
 
 local function fireSilentAim(aimPos)
     if not remote then return end
-    print("[Silent] firing remote with aimPos:", aimPos)
     pcall(function()
         remote:FireServer("MOUSE", aimPos)
     end)
 end
 
 local function prepareSilentAim()
-    print("[Silent] prepareSilentAim called")
-    if not getgenv().SilentAimEnabled then 
-        print("[Silent] silent aim disabled") 
-        return 
-    end
+    if not getgenv().SilentAimEnabled then return end
     local hitChance = getgenv().SilentAimHitChance or 85
-    if math.random(100) > hitChance then 
-        print("[Silent] hit chance failed") 
-        return 
-    end
+    if math.random(100) > hitChance then return end
 
     local targetPlayer = SilentTarget
-    if not targetPlayer or not targetPlayer.character then 
-        print("[Silent] SilentTarget is nil or no character") 
-        return 
-    end
-    print("[Silent] target:", targetPlayer.player.Name)
+    if not targetPlayer or not targetPlayer.character then return end
 
     local targetChar = targetPlayer.character
-    if getgenv().SilentAimKnockCheck and IsKnocked(targetChar) then 
-        print("[Silent] knocked") 
-        return 
-    end
-    if getgenv().SilentAimForcefieldCheck and hasForcefield(targetChar) then 
-        print("[Silent] forcefield") 
-        return 
-    end
-    if getgenv().SilentAimFriendCheck and targetPlayer.player:IsFriendsWith(LocalPlayer.UserId) then 
-        print("[Silent] friend") 
-        return 
-    end
+
+    if getgenv().SilentAimKnockCheck and IsKnocked(targetChar) then return end
+    if getgenv().SilentAimForcefieldCheck and hasForcefield(targetChar) then return end
+    if getgenv().SilentAimFriendCheck and targetPlayer.player:IsFriendsWith(LocalPlayer.UserId) then return end
 
     local hum = targetChar:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then 
-        print("[Silent] dead") 
-        return 
-    end
+    if not hum or hum.Health <= 0 then return end
 
     local aimPart, customPoint = getSilentAimPart(targetChar, targetPlayer)
-    if not aimPart then 
-        print("[Silent] no aim part") 
-        return 
-    end
+    if not aimPart then return end
 
-    if getgenv().SilentAimWallCheck and not isVisible(aimPart.Position, targetPlayer) then 
-        print("[Silent] wall check") 
-        return 
-    end
+    if getgenv().SilentAimWallCheck and not isVisible(aimPart.Position, targetPlayer) then return end
 
     local aimPos = customPoint or computeSilentAimPosition(aimPart, targetPlayer,
         getgenv().SilentAimPrediction,
@@ -598,32 +554,17 @@ local function prepareSilentAim()
     if antiCurve > 0 then
         local dir = (aimPos - Camera.CFrame.Position).Unit
         local angle = math.deg(math.acos(Camera.CFrame.LookVector:Dot(dir)))
-        if angle > antiCurve then 
-            print("[Silent] anti-curve, angle:", angle) 
-            return 
-        end
+        if angle > antiCurve then return end
     end
 
     if getgenv().SilentAimAntiGround then
         local groundHit = GetGroundIntersection(aimPos, targetChar)
-        if groundHit then 
-            print("[Silent] anti-ground") 
-            return 
-        end
+        if groundHit then return end
     end
 
-    print("[Silent] aimPos computed:", aimPos)
     fireSilentAim(aimPos)
 end
 
--- Hook mouse click (left button)
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        prepareSilentAim()
-    end
-end)
-
--- Also keep tool activated hook (fallback)
 local function onToolActivated()
     prepareSilentAim()
 end
@@ -709,6 +650,18 @@ RunService.RenderStepped:Connect(function()
             return
         end
     elseif activation == "Toggle" then
+        -- Polling-based toggle (works even if UI consumes events)
+        local key = getKeyCode(getgenv().AimbotKey or "E")
+        local isDown = UserInputService:IsKeyDown(key)
+        if isDown and not previousKeyState then
+            camLockActive = not camLockActive
+            if not camLockActive then
+                currentTarget = nil
+                SilentTarget = nil
+            end
+        end
+        previousKeyState = isDown
+
         if camLockActive then
             shouldLock = true
             enemiesList = getValidEnemies()
