@@ -1,16 +1,65 @@
-loadstring(game:HttpGet("https://raw.githubusercontent.com/zqhsk8vfpr-stack/Astra/main/astra%20ui"))()
+-- ====================================================================
+-- 1. LOAD UI (with error protection)
+-- ====================================================================
+local uiLoaded = false
+pcall(function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/zqhsk8vfpr-stack/Astra/main/astra%20ui"))()
+    uiLoaded = true
+end)
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Lighting = game:GetService("Lighting")
-local StarterGui = game:GetService("StarterGui")
-local TeleportService = game:GetService("TeleportService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+if not uiLoaded then
+    warn("UI library failed to load – running with default flags")
+    getgenv().Enabled = true
+    getgenv().Activation = "Rage"
+    getgenv().AimbotKey = "E"
+    getgenv().SmoothnessEnabled = false
+    getgenv().FriendCheck = false
+    getgenv().KnockCheck = false
+    getgenv().ForcefieldCheck = false
+    getgenv().AimbotWallCheck = false
+    getgenv().LockUntilDeath = false
+    getgenv().TargetOutline = false
+    getgenv().HitpartSelection = "Direct"
+    getgenv().TargetPriority = "Closest"
+    getgenv().Prediction = false
+    getgenv().PredictionX = 0.115
+    getgenv().PredictionY = 0.115
+    getgenv().PredictionZ = 0.115
+    getgenv().AutoPrediction = false
+    getgenv().AutoPredictionMode = "Regular"
+    getgenv().JumpOffset = 0
+    getgenv().FallOffset = 0
+    getgenv().SilentAimEnabled = false
+    getgenv().SilentAimKey = "G"
+    getgenv().SilentAimMethod = "Direct"
+    getgenv().SilentAimHitChance = 85
+    getgenv().SilentAimPrediction = false
+    getgenv().SilentAimPredX = 0.115
+    getgenv().SilentAimPredY = 0.115
+    getgenv().SilentAimPredZ = 0.115
+    getgenv().SilentAimAutoPrediction = false
+    getgenv().SilentAimAutoPredictionMode = "Regular"
+    getgenv().SilentAimAntiCurve = 8
+    getgenv().SilentAimAntiGround = false
+    getgenv().SilentAimWallCheck = false
+    getgenv().SilentAimKnockCheck = false
+    getgenv().SilentAimForcefieldCheck = false
+    getgenv().SilentAimFriendCheck = false
+    getgenv().SilentAimEnemySwitchDelay = nil
+end
 
+local library = _G.library
+if not library and uiLoaded then
+    for i = 1, 30 do
+        task.wait(0.1)
+        library = _G.library
+        if library and library._tabs then break end
+    end
+end
+
+-- ====================================================================
+-- 2. PREDICTION PRESETS & HELPERS
+-- ====================================================================
 local regularPresets = {
     0.1296483701, 0.1835097246, 0.1956231087, 0.1749025683, 0.1567830492, 0.1379206415,
     0.1775093826, 0.1530982047, 0.1459072836, 0.1248790613, 0.1982016375, 0.1598437102,
@@ -532,7 +581,6 @@ local function prepareSilentAim()
     if not targetPlayer or not targetPlayer.character then return end
 
     local targetChar = targetPlayer.character
-
     if getgenv().SilentAimKnockCheck and IsKnocked(targetChar) then return end
     if getgenv().SilentAimForcefieldCheck and hasForcefield(targetChar) then return end
     if getgenv().SilentAimFriendCheck and targetPlayer.player:IsFriendsWith(LocalPlayer.UserId) then return end
@@ -591,9 +639,7 @@ LocalPlayer.Backpack.ChildAdded:Connect(function(c) task.wait(0.1) hookTool(c) e
 local prevLookVectors = {}
 local function recordLookVector()
     table.insert(prevLookVectors, Camera.CFrame.LookVector)
-    if #prevLookVectors > 5 then
-        table.remove(prevLookVectors, 1)
-    end
+    if #prevLookVectors > 5 then table.remove(prevLookVectors, 1) end
 end
 
 local function getMovementDirection()
@@ -650,7 +696,6 @@ RunService.RenderStepped:Connect(function()
             return
         end
     elseif activation == "Toggle" then
-        -- Polling-based toggle (works even if UI consumes events)
         local key = getKeyCode(getgenv().AimbotKey or "E")
         local isDown = UserInputService:IsKeyDown(key)
         if isDown and not previousKeyState then
@@ -661,7 +706,6 @@ RunService.RenderStepped:Connect(function()
             end
         end
         previousKeyState = isDown
-
         if camLockActive then
             shouldLock = true
             enemiesList = getValidEnemies()
@@ -767,24 +811,17 @@ RunService.RenderStepped:Connect(function()
         local proj = rel:Dot(ray.Direction)
         local closestOnRay = ray.Origin + ray.Direction * proj
         local perpDist = (aimPos - closestOnRay).Magnitude
-
         local shouldAssist = true
-        if perpDist > 8 then
-            shouldAssist = false
-        end
+        if perpDist > 8 then shouldAssist = false end
         if angularError < 2.0 then
             local desiredCF = CFrame.lookAt(Camera.CFrame.Position, aimPos)
             Camera.CFrame = Camera.CFrame:Lerp(desiredCF, 0.05)
             return
         end
-
         local maxError = 30
         local factor = math.min(angularError / maxError, 1) * 0.2
         local easedFactor = getEasedValue(factor, "Quad", "Out")
-        if not shouldAssist then
-            easedFactor = 0.05
-        end
-
+        if not shouldAssist then easedFactor = 0.05 end
         local desiredCF = CFrame.lookAt(Camera.CFrame.Position, aimPos)
         Camera.CFrame = Camera.CFrame:Lerp(desiredCF, easedFactor)
     else
@@ -820,7 +857,6 @@ task.spawn(function()
                     end
                 end
             end
-
             if getgenv().AutoReload then
                 local char = LocalPlayer.Character
                 if char then
@@ -854,18 +890,15 @@ task.spawn(function()
                     end
                 end
             end
-
             if getgenv().Prefire and currentTarget then
                 local char = LocalPlayer.Character
                 if not char then return end
                 local myTool = char:FindFirstChildWhichIsA("Tool")
                 if not myTool then return end
-
                 local enemyChar = currentTarget.character
                 if not enemyChar then return end
                 local enemyTool = enemyChar:FindFirstChildWhichIsA("Tool")
                 if not enemyTool then return end
-
                 local enemyAmmo = enemyTool:FindFirstChild("AMMO") or enemyTool:FindFirstChild("Ammo") or enemyTool:FindFirstChild("CurrentAmmo") or enemyTool:FindFirstChild("Clip")
                 if enemyAmmo and (enemyAmmo:IsA("NumberValue") or enemyAmmo:IsA("IntValue")) then
                     local currentAmmo = enemyAmmo.Value
@@ -1031,20 +1064,16 @@ task.spawn(function()
             local buyFood = getgenv().AutoBuyFood or false
             local buyWeapons = getgenv().AutoBuyWeapons or false
             if not buyArmor and not buyFood and not buyWeapons then return end
-
             local now = tick()
             local cooldown = getgenv().AutoBuyCooldown or 5
             if now - lastBuyTime < cooldown then return end
-
             local char = LocalPlayer.Character
             if not char then return end
             local hrp = char:FindFirstChild("HumanoidRootPart")
             if not hrp then return end
-
             local proximity = getgenv().AutoBuyProximity or 20
             local foodList = getgenv().AutoBuyFoodList or {}
             local weaponList = getgenv().AutoBuyWeaponsList or {}
-
             local cleanFoodList = {}
             for _, item in ipairs(foodList) do
                 local cleaned = cleanItemName(item):lower()
@@ -1055,23 +1084,18 @@ task.spawn(function()
                 local cleaned = cleanItemName(item):lower()
                 if cleaned ~= "" then table.insert(cleanWeaponList, cleaned) end
             end
-
             if #buyableCache == 0 or (now - cacheTime) > 2 then
                 refreshBuyableCache()
             end
-
             for _, item in ipairs(buyableCache) do
                 local distance = (item.part.Position - hrp.Position).Magnitude
                 if distance > proximity then continue end
-
                 local cleanName = item.cleaned
                 if cleanName == "" then cleanName = item.name:lower() end
-
                 local shouldBuy = false
                 if buyArmor and (cleanName:find("armor") or cleanName:find("medium") or cleanName:find("high")) then
                     shouldBuy = true
                 end
-
                 if not shouldBuy and buyFood then
                     for _, food in ipairs(cleanFoodList) do
                         if cleanName:find(food) then
@@ -1080,7 +1104,6 @@ task.spawn(function()
                         end
                     end
                 end
-
                 if not shouldBuy and buyWeapons then
                     for _, weap in ipairs(cleanWeaponList) do
                         if cleanName:find(weap) then
@@ -1089,7 +1112,6 @@ task.spawn(function()
                         end
                     end
                 end
-
                 if shouldBuy then
                     if tryBuyItem(item.clickable) then
                         lastBuyTime = now
