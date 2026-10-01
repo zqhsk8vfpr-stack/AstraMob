@@ -1,36 +1,77 @@
-
-(function()
-pcall(function()
+local ok, err = pcall(function()
     local src = game:HttpGet("https://raw.githubusercontent.com/zqhsk8vfpr-stack/Astra/refs/heads/main/astra%20ui")
     local fn = loadstring(src)
     if fn then fn() end
 end)
+if not ok then warn("[Astra UI] " .. tostring(err)) end
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local StarterGui = game:GetService("StarterGui")
-local TeleportService = game:GetService("TeleportService")
-local Stats = game:GetService("Stats")
+local function clearTable(t)
+    for k in pairs(t) do t[k] = nil end
+end
+
+local vim
+pcall(function() vim = game:GetService("VirtualInputManager") end)
+
+(function()
+local cloneref = cloneref or function(obj) return obj end
+
+local Players = cloneref(game:GetService("Players"))
+local RunService = cloneref(game:GetService("RunService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local Workspace = cloneref(game:GetService("Workspace"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+local StarterGui = cloneref(game:GetService("StarterGui"))
+local TeleportService = cloneref(game:GetService("TeleportService"))
+local Stats = cloneref(game:GetService("Stats"))
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
 local library = getgenv().library
 
-local function getFlag(name, default)
-    local v = getgenv()[name]
-    if v ~= nil then return v end
-    if _G.flags and _G.flags[name] ~= nil then return _G.flags[name] end
-    if library and library.flags and library.flags[name] ~= nil then return library.flags[name] end
-    return default
+local Connections = {}
+local function track(conn)
+    if conn then
+        Connections[#Connections + 1] = conn
+    end
+    return conn
 end
 
-local function getSetting(name, default)
+local function disconnectAll()
+    for i = 1, #Connections do
+        pcall(function() Connections[i]:Disconnect() end)
+    end
+    clearTable(Connections)
+end
+
+local function setDefault(name, value)
+    if getgenv()[name] == nil then
+        getgenv()[name] = value
+    end
+end
+
+setDefault("ABAlpha", 0.9)
+setDefault("ABBeta", 0.50)
+setDefault("AdvancedAutoTime", true)
+setDefault("AdvancedTimeAhead", 0.15)
+setDefault("BulletSpeed", 1200)
+
+local _flagCache = {}
+local _flagCacheTime = {}
+local FLAG_CACHE_TTL = 0.15
+
+local function getFlag(name, default)
+    local now = tick()
+    local cached = _flagCache[name]
+    if cached ~= nil and (now - (_flagCacheTime[name] or 0)) < FLAG_CACHE_TTL then
+        return cached
+    end
     local v = getgenv()[name]
-    if v ~= nil then return v end
-    return default
+    if v == nil and _G.flags then v = _G.flags[name] end
+    if v == nil and library and library.flags then v = library.flags[name] end
+    if v == nil then v = default end
+    _flagCache[name] = v
+    _flagCacheTime[name] = now
+    return v
 end
 
 local function getKeybindValue(flagName)
@@ -54,13 +95,6 @@ local function getKeybindKey(flagName, defaultKey)
     return defaultKey
 end
 
-local function getKeybindActive(flagName)
-    local v = getKeybindValue(flagName)
-    if type(v) == "boolean" then return v end
-    if type(v) == "table" and v.active ~= nil then return v.active end
-    return false
-end
-
 local function isSilentAimActive()
     local v = getKeybindValue("SilentAimKey")
     if type(v) == "table" and v.active ~= nil then return v.active end
@@ -82,6 +116,7 @@ local _lastVisibleScan = {}
 local _friendCache = {}
 local _friendCacheTime = {}
 local resolverState = {}
+
 local _weaponHitCache = setmetatable({}, {__mode = "k"})
 local hookedTools = setmetatable({}, {__mode = "k"})
 local _knockCache = {}
@@ -90,24 +125,86 @@ local _aimPartCache = {}
 local _aimPartCacheTime = {}
 local _visCache = {}
 local _visCacheTime = {}
+local _lastResolvedVel = setmetatable({}, {__mode = "k"})
+local _advancedTrackers = setmetatable({}, {__mode = "k"})
 
-local VIS_SCAN_INTERVAL = 0.2
+local charRefs = setmetatable({}, {__mode = "k"})
+
+local function getCharRefs(char)
+    local r = charRefs[char]
+    if r then return r end
+    r = {
+        humanoid = nil,
+        head = nil,
+        root = nil,
+        forcefield = nil,
+        lastCheck = 0,
+    }
+    charRefs[char] = r
+    return r
+end
+
+local function refreshCharRefs(char, force)
+    local r = getCharRefs(char)
+    local now = tick()
+    if force or (now - r.lastCheck) > 0.5 then
+        r.humanoid = char:FindFirstChildOfClass("Humanoid") or r.humanoid
+        r.head = char:FindFirstChild("Head") or r.head
+        r.root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or r.root
+        r.forcefield = char:FindFirstChildOfClass("ForceField")
+        r.lastCheck = now
+    end
+    return r
+end
+
+local VIS_SCAN_INTERVAL = 0.25
 local FRIEND_CACHE_TTL = 10
-local KNOCK_CACHE_TTL = 0.35
-local AIM_PART_CACHE_TTL = 0.033
-local VIS_CACHE_TTL = 0.05
-local ENEMY_CACHE_TTL = 0.2
+local KNOCK_CACHE_TTL = 0.4
+local AIM_PART_CACHE_TTL = 0.25
+local VIS_CACHE_TTL = 0.2
+local BODY_PARTS_CACHE_TTL = 4
+local SAFETY_REBUILD_INTERVAL = 3
+
+local ESP_UPDATE_RATE = 1. / 30
+local TRACKER191_UPDATE_RATE = 1 /827 30
+local AIMBOT_UPDATE364_RATE = 1 /51 60
+local AUTOSHOOT_UPDATE,_RATE = 1 / 60
+
+local _espElapsed = 0
+local _trackerElapsed = 0
+local _aimbotElapsed = 0
+local _autoshootElapsed = 0
 
 local aimbotToggleState = false
-local lastAimbotPressed = false
 local lastActivationMode = nil
-local wasAimbotActive = false
 
-local DEADZONE_PX = 5
-local MOVEMENT_DOT_MIN = 0.3
+local mouseButtons = {
+    [Enum.UserInputType.MouseButton1] = false,
+    [Enum.UserInputType.MouseButton2] = false,
+}
 
-local STICKY_MIN_RATIO = 0.6
-local STICKY_BOOST = 1.6
+local _cachedSmoothX = 0.25
+local _cachedSmoothY = 0.25
+local _espMasterOn = false
+local _espNameOn = false
+local _espDistOn = false
+local _espBoxOn = false
+
+local playerCache = {}
+local playerCacheArray = {}
+
+local function rebuildPlayerCacheArray()
+    local arr = {}
+    for plr in pairs(playerCache) do
+        arr[#arr + 1] = plr
+    end
+    playerCacheArray = arr
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    playerCache[player] = true
+end
+rebuildPlayerCacheArray()
 
 local TARGET_PRIORITY_MAP = {
     closest = "closest",
@@ -138,11 +235,13 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(3)
         local new = {}
         local anyTagged = false
         if library and type(library.get_priority) == "function" then
-            for _, plr in ipairs(Players:GetPlayers()) do
+            local _players = playerCacheArray
+            for i = 1, #_players do
+                local plr = _players[i]
                 if plr ~= LocalPlayer then
                     local ok, result = pcall(library.get_priority, plr)
                     if ok and type(result) == "string" then
@@ -165,7 +264,6 @@ end)
 
 local activeGamepad = Enum.UserInputType.Gamepad1
 
--- pick up controllers already connected before this script ran
 pcall(function()
     local pads = UserInputService:GetConnectedGamepads()
     if pads and #pads > 0 then
@@ -173,9 +271,9 @@ pcall(function()
     end
 end)
 
-UserInputService.GamepadConnected:Connect(function(gamepad)
+track(UserInputService.GamepadConnected:Connect(function(gamepad)
     activeGamepad = gamepad
-end)
+end))
 
 local function isGamepadInput(t)
     return t == Enum.UserInputType.Gamepad1
@@ -197,19 +295,20 @@ local function isKeyboardKeyCode(key)
     return true
 end
 
+local _keyCodeByName = {}
+local _keyCodeByValue = {}
+for _, code in ipairs(Enum.KeyCode:GetEnumItems()) do
+    _keyCodeByName[code.Name:upper()] = code
+    _keyCodeByValue[code.Value] = code
+end
+
 local function getKeyCode(name)
     if typeof(name) == "EnumItem" then return name end
     if type(name) == "number" then
-        for _, code in pairs(Enum.KeyCode:GetEnumItems()) do
-            if code.Value == name then return code end
-        end
+        return _keyCodeByValue[name] or Enum.KeyCode.E
     end
     if type(name) ~= "string" then name = tostring(name) end
-    local upper = name:upper()
-    for _, code in pairs(Enum.KeyCode:GetEnumItems()) do
-        if code.Name:upper() == upper then return code end
-    end
-    return Enum.KeyCode.E
+    return _keyCodeByName[name:upper()] or Enum.KeyCode.E
 end
 
 local pingPresets = {
@@ -217,7 +316,7 @@ local pingPresets = {
     [70] = {0.12358983924, 0.14720395816, 0.18290573461, 0.13647820593, 0.15930284716, 0.19384726501, 0.12675948302, 0.16528493017, 0.13094857263, 0.18746302951, 0.15482930672, 0.12193847560, 0.17930485621, 0.14270593846, 0.16849302715, 0.11123456789, 0.19082736451, 0.17563829104, 0.13392048576, 0.18650492731},
     [80] = {0.14720395816, 0.18290573461, 0.13647820593, 0.15930284716, 0.19384726501, 0.12675948302, 0.16528493017, 0.13094857263, 0.18746302951, 0.15482930672, 0.12193847560, 0.14270593846, 0.16849302715, 0.11123456789, 0.19082736451, 0.17563829104, 0.13392048576, 0.18650492731, 0.14930285761, 0.17284930516, 0.13847620593},
     [90] = {0.15673928401, 0.19482057361, 0.12847593026, 0.16382947510, 0.14592038476, 0.18137465029, 0.15720394816, 0.13294857603, 0.18947502631, 0.12485930742, 0.17630294851, 0.14182736590, 0.16938472051, 0.11593827460, 0.19274058316, 0.15839204761, 0.13472059683, 0.15770742, 0.15121184, 0.18390527461},
-    [100] = {0.12748395026, 0.16482930517, 0.15193847560, 0.17830485621, 0.14370593846, 0.16749302715, 0.19182736451, 0.17463829104, 0.13592048576, 0.18850492731, 0.13456789012, 0.15678901234, 0.17890123456, 0.19012345678, 0.11223344556, 0.12334455667, 0.13445566778, 0.14556677889, 0.15667788990, 0.16778899001},
+    [100] = {0.12748395026, 0.16482930517, 0.15193847560, 0.17830485621, 0.14370593846, 0.16749302715, 0 0.17463829104, 0.13592048576, 0.18850492731, 0.13456789012, 0.15678901234, 0.17890123456, 0.19012345678, 0.11223344556, 0.12334455667, 0.13445566778, 0.14556677889, 0.15667788990, 0.16778899001},
 }
 
 local ALL_ITEMS = {
@@ -231,195 +330,224 @@ local NON_WEAPON_NAMES = {
     "Super Pizza", "Sauce", "Katana", "Spray"
 }
 
+local _weaponClassCache = setmetatable({}, {__mode = "k"})
 local function isWeapon(tool)
     if not tool or not tool:IsA("Tool") then return false end
+    local cached = _weaponClassCache[tool]
+    if cached ~= nil then return cached end
     local name = tool.Name
     local raw = name:match("%[(.-)%]") or name
     raw = raw:gsub("^%s+", ""):gsub("%s+$", "")
+    local result = true
     for _, non in ipairs(NON_WEAPON_NAMES) do
         if raw:lower() == non:lower() then
-            return false
+            result = false
+            break
         end
     end
-    return true
+    _weaponClassCache[tool] = result
+    return result
 end
 
-local NAME_TAG_NAME = "OverheadNameTag"
-local nameTags = {}
+local esp_tags = {}
 
-local ENEMY_COLOR = Color3.fromRGB(255, 50, 50)
-local NORMAL_COLOR = Color3.fromRGB(255, 255, 255)
+local function createESP(plr)
+    if esp_tags[plr] then return end
 
-local function buildNameTag(player)
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = NAME_TAG_NAME
-    billboard.Size = UDim2.fromScale(3, 0.8)
-    billboard.StudsOffset = Vector3.new(0, -3, 0)
-    billboard.AlwaysOnTop = true
-    billboard.LightInfluence = 0
-    billboard.MaxDistance = 500
+    local nameGui = Instance.new("BillboardGui")
+    nameGui.Name = "OverheadNameTag"
+    nameGui.Size = UDim2.fromScale(3, 0.8)
+    nameGui.StudsOffset = Vector3.new(0, -3, 0)
+    nameGui.AlwaysOnTop = true
+    nameGui.LightInfluence = 0
+    nameGui.MaxDistance = 500
 
-    local label = Instance.new("TextLabel")
-    label.Name = "NameLabel"
-    label.Size = UDim2.fromScale(1, 1)
-    label.BackgroundTransparency = 1
-    label.BorderSizePixel = 0
-    label.Text = player.DisplayName
-    label.TextColor3 = NORMAL_COLOR
-    label.TextStrokeTransparency = 1
-    label.TextSize = 7
-    label.Font = Enum.Font.GothamBlack
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "NameLabel"
+    nameLabel.Size = UDim2.fromScale(1, 1)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.BorderSizePixel = 0
+    nameLabel.Text = plr.DisplayName
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextStrokeTransparency = 1
+    nameLabel.TextSize = 7
+    nameLabel.Font = Enum.Font.GothamBlack
+    nameLabel.Parent = nameGui
 
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 0, 0)
-    stroke.Thickness = 1
-    stroke.LineJoinMode = Enum.LineJoinMode.Round
-    stroke.Parent = label
+    local nameStroke = Instance.new("UIStroke")
+    nameStroke.Color = Color3.fromRGB(0, 0, 0)
+    nameStroke.Thickness = 1
+    nameStroke.LineJoinMode = Enum.LineJoinMode.Round
+    nameStroke.Parent = nameLabel
 
-    label.Parent = billboard
-    return billboard
+    local distGui = Instance.new("BillboardGui")
+    distGui.Name = "OverheadDistanceTag"
+    distGui.Size = UDim2.fromScale(2, 0.8)
+    distGui.StudsOffset = Vector3.new(0, -3, 0)
+    distGui.AlwaysOnTop = true
+    distGui.LightInfluence = 0
+    distGui.MaxDistance = 500
+
+    local distLabel = Instance.new("TextLabel")
+    distLabel.Name = "DistanceLabel"
+    distLabel.Size = UDim2.fromScale(1, 1)
+    distLabel.BackgroundTransparency = 1
+    distLabel.BorderSizePixel = 0
+    distLabel.Text = ""
+    distLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    distLabel.TextStrokeTransparency = 1
+    distLabel.TextSize = 7
+    distLabel.Font = Enum.Font.GothamBlack
+    distLabel.Parent = distGui
+
+    local distStroke = Instance.new("UIStroke")
+    distStroke.Color = Color3.fromRGB(0, 0, 0)
+    distStroke.Thickness = 1
+    distStroke.LineJoinMode = Enum.LineJoinMode.Round
+    distStroke.Parent = distLabel
+
+    local boxGui = Instance.new("ScreenGui")
+    boxGui.Name = "BoxESP_" .. plr.Name
+    local parentGui = (gethui and gethui()) or game.CoreGui
+    pcall(function() boxGui.Parent = parentGui end)
+    boxGui.ResetOnSpawn = false
+
+    local boxFrame = Instance.new("Frame")
+    boxFrame.Name = "Box"
+    boxFrame.BackgroundTransparency = 1
+    boxFrame.BorderSizePixel = 0
+    boxFrame.Visible = false
+    boxFrame.Parent = boxGui
+
+    local boxStroke = Instance.new("UIStroke")
+    boxStroke.Color = Color3.fromRGB(255, 255, 255)
+    boxStroke.Thickness = 1
+    boxStroke.Parent = boxFrame
+
+    esp_tags[plr] = {
+        NameGui = nameGui,
+        NameLabel = nameLabel,
+        LastName = nil,
+        LastNameColor = nil,
+        DistGui = distGui,
+        DistLabel = distLabel,
+        LastDist = nil,
+        BoxGui = boxGui,
+        BoxFrame = boxFrame,
+        BoxStroke = boxStroke,
+        LastBoxColor = nil,
+        LastBoxSize = nil,
+        LastBoxPos = nil,
+    }
 end
 
-local function attachNameTag(player, character)
-    if player == LocalPlayer then return end
-    if not getFlag("EnemyESP", false) then return end    -- master gate
-    if not getFlag("NameESP", false) then return end     -- sub toggle
-    if nameTags[player] then return end
-    local root = character:WaitForChild("HumanoidRootPart", 5)
-    if not root then return end
-    if root:FindFirstChild(NAME_TAG_NAME) then
-        nameTags[player] = root:FindFirstChild(NAME_TAG_NAME)
-        return
-    end
-    local tag = buildNameTag(player)
-    tag.Adornee = root
-    tag.Parent = root
-    nameTags[player] = tag
-end
+local function updateESP()
+    local masterOn = _espMasterOn
+    local nameOn = _espNameOn
+    local distOn = _espDistOn
+    local boxOn = _espBoxOn
 
-local function detachNameTag(player)
-    local tag = nameTags[player]
-    if tag then
-        pcall(function() tag:Destroy() end)
-        nameTags[player] = nil
-    end
-end
-
-local function updateNameTagColor(player)
-    local tag = nameTags[player]
-    if not tag then return end
-    local label = tag:FindFirstChild("NameLabel")
-    if not label then return end
-    local isEnemy = playerPriority[player.UserId] == "Enemy"
-    local showRed = isEnemy and getFlag("Targets", false) == true
-    local want = showRed and ENEMY_COLOR or NORMAL_COLOR
-    if label.TextColor3 ~= want then
-        label.TextColor3 = want
-    end
-end
-
-local DIST_TAG_NAME = "OverheadDistanceTag"
-local distanceTags = {}
-
-local function buildDistanceTag()
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = DIST_TAG_NAME
-    billboard.Size = UDim2.fromScale(2, 0.8)
-    billboard.StudsOffset = Vector3.new(0, -3, 0)
-    billboard.AlwaysOnTop = true
-    billboard.LightInfluence = 0
-    billboard.MaxDistance = 500
-
-    local label = Instance.new("TextLabel")
-    label.Name = "DistanceLabel"
-    label.Size = UDim2.fromScale(1, 1)
-    label.BackgroundTransparency = 1
-    label.BorderSizePixel = 0
-    label.Text = ""
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.TextStrokeTransparency = 1
-    label.TextSize = 7
-    label.Font = Enum.Font.GothamBlack
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 0, 0)
-    stroke.Thickness = 1
-    stroke.LineJoinMode = Enum.LineJoinMode.Round
-    stroke.Parent = label
-
-    label.Parent = billboard
-    return billboard, label
-end
-
-local function attachDistanceTag(player, character)
-    if player == LocalPlayer then return end
-    if not getFlag("EnemyESP", false) then return end    -- master gate
-    if not getFlag("DistanceESP", false) then return end -- sub toggle
-    if distanceTags[player] then return end
-    local root = character:WaitForChild("HumanoidRootPart", 5)
-    if not root then return end
-    if root:FindFirstChild(DIST_TAG_NAME) then
-        distanceTags[player] = { root = root, label = root:FindFirstChild(DIST_TAG_NAME):FindFirstChild("DistanceLabel") }
-        return
-    end
-    local billboard, label = buildDistanceTag()
-    billboard.Adornee = root
-    billboard.Parent = root
-    distanceTags[player] = { root = root, label = label }
-end
-
-local function detachDistanceTag(player)
-    local entry = distanceTags[player]
-    if entry then
-        local billboard = entry.root and entry.root:FindFirstChild(DIST_TAG_NAME)
-        if billboard then
-            pcall(function() billboard:Destroy() end)
+    if not masterOn then
+        for _, tags in pairs(esp_tags) do
+            if tags.NameGui and tags.NameGui.Enabled then tags.NameGui.Enabled = false end
+            if tags.DistGui and tags.DistGui.Enabled then tags.DistGui.Enabled = false end
+            if tags.BoxFrame and tags.BoxFrame.Visible then tags.BoxFrame.Visible = false end
         end
-        distanceTags[player] = nil
+        return
+    end
+
+    local camPos = Camera.CFrame.Position
+
+    for i = 1, #playerCacheArray do
+        local plr = playerCacheArray[i]
+        if plr ~= LocalPlayer then
+            local char = plr.Character
+            if char then
+                local refs = getCharRefs(char)
+                local root = refs.root
+                if root and root.Parent then
+                    if not esp_tags[plr] then
+                        createESP(plr)
+                    end
+
+                    local tags = esp_tags[plr]
+
+                    if tags.NameGui.Adornee ~= root then tags.NameGui.Adornee = root end
+                    if tags.NameGui.Parent ~= root then tags.NameGui.Parent = root end
+                    if tags.NameGui.Enabled ~= nameOn then tags.NameGui.Enabled = nameOn end
+
+                    if nameOn then
+                        local displayName = plr.DisplayName
+                        if tags.LastName ~= displayName then
+                            tags.LastName = displayName
+                            tags.NameLabel.Text = displayName
+                        end
+                        local isEnemy = playerPriority[plr.UserId] == "Enemy"
+                        local color = isEnemy and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(255, 255, 255)
+                        if tags.LastNameColor ~= color then
+                            tags.LastNameColor = color
+                            tags.NameLabel.TextColor3 = color
+                        end
+                    end
+
+                    if tags.DistGui.Adornee ~= root then tags.DistGui.Adornee = root end
+                    if tags.DistGui.Parent ~= root then tags.DistGui.Parent = root end
+                    if tags.DistGui.Enabled ~= distOn then tags.DistGui.Enabled = distOn end
+
+                    if distOn then
+                        local d = tostring(math.round((root.Position - camPos).Magnitude)) .. "m"
+                        if tags.LastDist ~= d then
+                            tags.LastDist = d
+                            tags.DistLabel.Text = d
+                        end
+                    end
+
+                    if tags.BoxFrame.Visible ~= boxOn then tags.BoxFrame.Visible = boxOn end
+                    if boxOn then
+                        local head = refs.head
+                        if head and head.Parent then
+                            local headPos, onScreen1 = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                            local feetPos, onScreen2 = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 2.5, 0))
+
+                            if onScreen1 and onScreen2 then
+                                local height = math.abs(headPos.Y - feetPos.Y)
+                                local width = height * 0.6
+                                local newSize = UDim2.new(0, width, 0, height)
+                                local newPos = UDim2.new(0, headPos.X - (width / 2), 0, headPos.Y)
+
+                                if tags.LastBoxSize ~= newSize then
+                                    tags.LastBoxSize = newSize
+                                    tags.BoxFrame.Size = newSize
+                                end
+                                if tags.LastBoxPos ~= newPos then
+                                    tags.LastBoxPos = newPos
+                                    tags.BoxFrame.Position = newPos
+                                end
+
+                                local isEnemy = playerPriority[plr.UserId] == "Enemy"
+                                local color = isEnemy and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(255, 255, 255)
+                                if tags.LastBoxColor ~= color then
+                                    tags.LastBoxColor = color
+                                    tags.BoxStroke.Color = color
+                                end
+                            else
+                                tags.BoxFrame.Visible = false
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
 end
 
-local prevLookVectors = {}
-local function recordLookVector()
-    local v = Camera.CFrame.LookVector
-    prevLookVectors[#prevLookVectors + 1] = v
-    if #prevLookVectors > 5 then
-        table.remove(prevLookVectors, 1)
-    end
-end
-
-local function getMovementDirection()
-    if #prevLookVectors < 2 then return nil end
-    local avg = Vector3.zero
-    for i = 2, #prevLookVectors do
-        avg += (prevLookVectors[i] - prevLookVectors[i - 1])
-    end
-    if avg.Magnitude < 0.001 then return nil end
-    return avg.Unit
-end
-
-local function easeOutSine(t) return math.sin((t * math.pi) / 2) end
-local function easeOutQuad(t) return 1 - (1 - t) * (1 - t) end
-local function easeOutCubic(t) return 1 - math.pow(1 - t, 3) end
-local function easeOutQuart(t) return 1 - math.pow(1 - t, 4) end
-local function easeOutExpo(t) return 1 - math.pow(2, -10 * t) end
-local function easeOutBack(t) local c1=1.70158; local c3=2.70158; return 1 + c3*(t-1)^3 + c1*(t-1)^2 end
-
-local function getEasedValue(t, style, dir)
-    style = style or "Linear"
-    dir = dir or "Out"
-    t = math.clamp(t, 0, 1)
-    if dir == "In" then t = 1 - t end
-    if dir == "InOut" then
-        return t < 0.5 and getEasedValue(2*t, style, "Out")/2 or 0.5 + getEasedValue(2*t-1, style, "Out")/2
-    end
-    if style == "Sine" then return easeOutSine(t) end
-    if style == "Quad" then return easeOutQuad(t) end
-    if style == "Cubic" then return easeOutCubic(t) end
-    if style == "Quart" then return easeOutQuart(t) end
-    if style == "Exponential" then return easeOutExpo(t) end
-    if style == "Back" then return easeOutBack(t) end
-    return t
+local function destroyESP(plr)
+    local tags = esp_tags[plr]
+    if not tags then return end
+    if tags.NameGui then tags.NameGui:Destroy() end
+    if tags.DistGui then tags.DistGui:Destroy() end
+    if tags.BoxGui then tags.BoxGui:Destroy() end
+    esp_tags[plr] = nil
 end
 
 local function clearCharCaches(char)
@@ -435,106 +563,12 @@ local function clearCharCaches(char)
     _aimPartCacheTime[char] = nil
     _visCache[char] = nil
     _visCacheTime[char] = nil
+    _lastResolvedVel[char] = nil
+    _advancedTrackers[char] = nil
+    charRefs[char] = nil
 end
 
 local _visIgnoreDirty = true
-
-local function watchPlayer(player)
-    if player == LocalPlayer then return end
-    player.CharacterAdded:Connect(function(char)
-        _visIgnoreDirty = true
-        task.spawn(attachNameTag, player, char)
-        task.spawn(attachDistanceTag, player, char)
-    end)
-    player.CharacterRemoving:Connect(function(char)
-        _visIgnoreDirty = true
-        detachNameTag(player)
-        detachDistanceTag(player)
-        clearCharCaches(char)
-    end)
-    if player.Character then
-        task.spawn(attachNameTag, player, player.Character)
-        task.spawn(attachDistanceTag, player, player.Character)
-    end
-end
-
-for _, plr in ipairs(Players:GetPlayers()) do
-    watchPlayer(plr)
-end
-Players.PlayerAdded:Connect(function(plr)
-    _visIgnoreDirty = true
-    watchPlayer(plr)
-end)
-Players.PlayerRemoving:Connect(function(plr)
-    _visIgnoreDirty = true
-    detachNameTag(plr)
-    detachDistanceTag(plr)
-    clearCharCaches(plr.Character)
-    _friendCache[plr] = nil
-    _friendCacheTime[plr] = nil
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(0.1)
-        local cam = workspace.CurrentCamera
-        if cam then
-            local camPos = cam.CFrame.Position
-            for _, entry in pairs(distanceTags) do
-                if entry.root and entry.root.Parent and entry.label then
-                    local delta = entry.root.Position - camPos
-                    entry.label.Text = string.format("%d", math.round(delta.Magnitude))
-                end
-            end
-        end
-    end
-end)
-
-local lastNameState = nil
-local lastDistanceState = nil
-
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        local masterOn = getFlag("EnemyESP", false) == true
-        local nameOn = masterOn and (getFlag("NameESP", false) == true)
-        local distOn = masterOn and (getFlag("DistanceESP", false) == true)
-
-        if nameOn ~= lastNameState then
-            lastNameState = nameOn
-            if nameOn then
-                for _, plr in ipairs(Players:GetPlayers()) do
-                    if plr ~= LocalPlayer and plr.Character then
-                        task.spawn(attachNameTag, plr, plr.Character)
-                    end
-                end
-            else
-                for plr in pairs(nameTags) do
-                    detachNameTag(plr)
-                end
-            end
-        end
-
-        if distOn ~= lastDistanceState then
-            lastDistanceState = distOn
-            if distOn then
-                for _, plr in ipairs(Players:GetPlayers()) do
-                    if plr ~= LocalPlayer and plr.Character then
-                        task.spawn(attachDistanceTag, plr, plr.Character)
-                    end
-                end
-            else
-                for plr in pairs(distanceTags) do
-                    detachDistanceTag(plr)
-                end
-            end
-        end
-
-        for plr in pairs(nameTags) do
-            updateNameTagColor(plr)
-        end
-    end
-end)
 
 local function getCurrentPing()
     local network = Stats:FindFirstChild("Network")
@@ -557,7 +591,8 @@ local function getPingBucket(ping)
 end
 
 local function getPredictionValue(mode)
-    if mode == "Regular" or mode == "Advanced" then
+    if mode == "Advanced" then return nil end
+    if mode == "Regular" then
         return nil
     elseif mode == "Ping based" then
         local ping = getgenv().CachedPing or 60
@@ -570,35 +605,9 @@ local function getPredictionValue(mode)
     return nil
 end
 
-task.spawn(function()
-    while true do
-        task.wait(1)
-        pcall(function()
-            local g = getgenv()
-            g.CachedPing = getCurrentPing() or 60
-            if getFlag("AutoPrediction", false) then
-                local val = getPredictionValue(getFlag("AutoPredictionMode", "Regular"))
-                if val then
-                    g.PredictionX = val
-                    g.PredictionY = val
-                    g.PredictionZ = val
-                end
-            end
-            if getFlag("SilentAimAutoPrediction", false) then
-                local val = getPredictionValue(getFlag("SilentAimAutoPredictionMode", "Regular"))
-                if val then
-                    g.SilentAimPredX = val
-                    g.SilentAimPredY = val
-                    g.SilentAimPredZ = val
-                end
-            end
-        end)
-    end
-end)
-
 local function scanMotor6Ds(char)
     local broken, total = 0, 0
-    for _, v in ipairs(char:GetDescendants()) do
+    for _, v in ipairs(char:GetChildren()) do
         if v:IsA("Motor6D") then
             total = total + 1
             if not v.Enabled then
@@ -611,12 +620,13 @@ end
 
 local function IsKnocked(char)
     if not char then return true end
-    local hum = char:FindFirstChildOfClass("Humanoid")
+    local refs = getCharRefs(char)
+    local hum = refs.humanoid
     if not hum then return true end
     local state = hum:GetState()
     if state == Enum.HumanoidStateType.Dead then return true end
     if hum.Health <= 0 then return true end
-    local root = char:FindFirstChild("HumanoidRootPart")
+    local root = refs.root
     if root and root.Anchored then return true end
     if hum.PlatformStand then return true end
     if state == Enum.HumanoidStateType.Physics then return true end
@@ -637,7 +647,8 @@ local function IsKnocked(char)
 end
 
 local function hasForcefield(char)
-    return char and char:FindFirstChildOfClass("ForceField") ~= nil
+    if not char then return false end
+    return getCharRefs(char).forcefield ~= nil
 end
 
 local function isFriendCached(plr)
@@ -662,39 +673,165 @@ local function isFriend(plr)
     return false
 end
 
-local validEnemiesCache = {}
-local cacheTime = 0
+local _prevPos        = setmetatable({}, {__mode = "k"})
+local _prevPosTime    = setmetatable({}, {__mode = "k"})
+local _realMoving     = setmetatable({}, {__mode = "k"})
 
-local function getValidEnemies()
+local function updateRealMotion(char)
+    local refs = getCharRefs(char)
+    local root = refs.root
+    if not root then return end
     local now = tick()
-    if now - cacheTime < ENEMY_CACHE_TTL then
-        return validEnemiesCache
+    local prev, prevT = _prevPos[char], _prevPosTime[char]
+    _prevPos[char] = root.Position
+    _prevPosTime[char] = now
+    if not prev or not prevT then
+        _realMoving[char] = false
+        return
     end
-    cacheTime = now
-    table.clear(validEnemiesCache)
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LocalPlayer then continue end
-        if isFriend(plr) then continue end
-        local char = plr.Character
-        if not char then continue end
-        if not char.Parent then continue end
-        if getFlag("AimbotKnockCheck", false) and IsKnocked(char) then continue end
-        if getFlag("AimbotForcefieldCheck", false) and hasForcefield(char) then continue end
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
-        local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("LowerTorso")
-        if not root or not root.Parent then continue end
-        table.insert(validEnemiesCache, { player = plr, character = char, humanoid = hum, rootPart = root })
+    local dt = now - prevT
+    if dt < 0.001 then return end
+    local speed = (root.Position - prev).Magnitude / dt
+    local wasMoving = _realMoving[char] == true
+
+    if speed > 4 then
+        _realMoving[char] = true
+    elseif speed < 1.5 then
+        _realMoving[char] = false
+    else
+        _realMoving[char] = wasMoving
     end
-    return validEnemiesCache
 end
+
+local validEnemiesCache = {}
+local validEnemiesByPlayer = {}
+local validEnemiesDirty = true
+local lastRebuildTime = 0
+
+local function markEnemiesDirty()
+    validEnemiesDirty = true
+end
+
+local function rebuildValidEnemies()
+    local now = tick()
+    if not validEnemiesDirty and (now - lastRebuildTime) < SAFETY_REBUILD_INTERVAL then
+        return
+    end
+    validEnemiesDirty = false
+    lastRebuildTime = now
+
+    local knockCheck = getFlag("AimbotKnockCheck", false)
+    local ffCheck = getFlag("AimbotForcefieldCheck", false)
+
+    clearTable(validEnemiesCache)
+    clearTable(validEnemiesByPlayer)
+
+    for i = 1, #playerCacheArray do
+        local plr = playerCacheArray[i]
+        if plr ~= LocalPlayer then
+            if not isFriend(plr) then
+                local char = plr.Character
+                if char and char.Parent then
+                    refreshCharRefs(char, false)
+                    local refs = getCharRefs(char)
+                    local skip = false
+                    if knockCheck and IsKnocked(char) then skip = true end
+                    if not skip and ffCheck and refs.forcefield then skip = true end
+                    if not skip then
+                        local hum = refs.humanoid
+                        if hum and hum.Health > 0 then
+                            local root = refs.root
+                            if root and root.Parent then
+                                local entry = { player = plr, character = char, humanoid = hum, rootPart = root }
+                                table.insert(validEnemiesCache, entry)
+                                validEnemiesByPlayer[plr] = entry
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function hookCharacter(char)
+    refreshCharRefs(char, true)
+    track(char.ChildAdded:Connect(function(child)
+        local r = getCharRefs(char)
+        if child:IsA("ForceField") then
+            r.forcefield = child
+        elseif child:IsA("Humanoid") then
+            r.humanoid = child
+            track(child.Died:Connect(markEnemiesDirty))
+        elseif child.Name == "Head" then
+            r.head = child
+        elseif child.Name == "HumanoidRootPart" then
+            r.root = child
+        end
+        markEnemiesDirty()
+    end))
+    track(char.ChildRemoved:Connect(function(child)
+        local r = getCharRefs(char)
+        if child:IsA("ForceField") and r.forcefield == child then
+            r.forcefield = nil
+        end
+        markEnemiesDirty()
+    end))
+    track(char.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            clearCharCaches(char)
+            markEnemiesDirty()
+        end
+    end))
+end
+
+local function onPlayerAdded(player)
+    playerCache[player] = true
+    rebuildPlayerCacheArray()
+    markEnemiesDirty()
+
+    track(player.CharacterAdded:Connect(function(char)
+        hookCharacter(char)
+        markEnemiesDirty()
+    end))
+    track(player.CharacterRemoving:Connect(function(char)
+        clearCharCaches(char)
+        markEnemiesDirty()
+    end))
+
+    if player.Character then
+        hookCharacter(player.Character)
+    end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        onPlayerAdded(player)
+    end
+end
+
+track(Players.PlayerAdded:Connect(function(player)
+    if player ~= LocalPlayer then
+        onPlayerAdded(player)
+    end
+end))
+
+track(Players.PlayerRemoving:Connect(function(player)
+    playerCache[player] = nil
+    rebuildPlayerCacheArray()
+    clearCharCaches(player.Character)
+    _friendCache[player] = nil
+    _friendCacheTime[player] = nil
+    destroyESP(player)
+    markEnemiesDirty()
+end))
 
 local _visRayParams = RaycastParams.new()
 _visRayParams.FilterType = Enum.RaycastFilterType.Exclude
 local _visIgnoreList = {}
 
 local function rebuildVisIgnore()
-    table.clear(_visIgnoreList)
+    clearTable(_visIgnoreList)
     if LocalPlayer.Character then
         _visIgnoreList[1] = LocalPlayer.Character
     end
@@ -702,8 +839,18 @@ local function rebuildVisIgnore()
     _visIgnoreDirty = false
 end
 
-LocalPlayer.CharacterAdded:Connect(function() _visIgnoreDirty = true end)
-LocalPlayer.CharacterRemoving:Connect(function() _visIgnoreDirty = true end)
+track(LocalPlayer.CharacterAdded:Connect(function(char)
+    hookCharacter(char)
+    _visIgnoreDirty = true
+    markEnemiesDirty()
+end))
+track(LocalPlayer.CharacterRemoving:Connect(function(char)
+    clearCharCaches(char)
+    _visIgnoreDirty = true
+end))
+if LocalPlayer.Character then
+    hookCharacter(LocalPlayer.Character)
+end
 
 local function isVisible(targetPos, targetChar)
     if targetChar then
@@ -737,14 +884,14 @@ local function getBodyParts(char)
     if not char then return {} end
     local now = tick()
     local cached = _bodyPartsCache[char]
-    if cached and (now - (_bodyPartsCacheTime[char] or 0)) < 0.2 then
+    if cached and (now - (_bodyPartsCacheTime[char] or 0)) < BODY_PARTS_CACHE_TTL then
         return cached
     end
     local parts = {}
-    for _, child in ipairs(char:GetDescendants()) do
+    for _, child in ipairs(char:GetChildren()) do
         if child:IsA("BasePart") and child.Transparency < 0.5 then
-            local name = child.Name:lower()
-            if not name:find("handle") and not name:find("tool") and not name:find("attachment") and not name:find("accessory") then
+            local lname = child.Name:lower()
+            if not lname:find("handle") then
                 table.insert(parts, child)
             end
         end
@@ -793,16 +940,18 @@ end
 
 local function computeHardcodedAimPart(char)
     local mode = getFlag("HitpartSelection", "Direct")
+    local refs = getCharRefs(char)
     if mode == "Direct" then
-        local head = char:FindFirstChild("Head")
+        local head = refs.head
         if head and head:IsA("BasePart") then return head end
-        local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
-        if torso and torso:IsA("BasePart") then return torso end
-        return char:FindFirstChild("HumanoidRootPart")
+        localhair root = refs.root
+.Y        if root and root:IsA("BasePart
+") then return root end
+        return nil               
     end
-    local allParts = getBodyParts(char)
-    if #allParts == 0 then
-        return char:FindFirstChild("HumanoidRootPart")
+    local allParts = getBody localParts(char)
+    if #allParts == dist 0 then
+        return refs.root
     end
     local crosshair = Camera.ViewportSize * 0.5
     local best, bestDist = nil, math.huge
@@ -845,16 +994,17 @@ local function getAimPart(char)
     return part
 end
 
-function selectClosest(enemies)
+local function selectClosest(enemies)
     local camPos = Camera.CFrame.Position
     local best, bestDist = nil, math.huge
     for _, data in ipairs(enemies) do
         local root = data.rootPart
-        if not root then continue end
-        local d = (root.Position - camPos).Magnitude
-        if d < bestDist then
-            bestDist = d
-            best = data
+        if root then
+            local d = (root.Position - camPos).Magnitude
+            if d < bestDist then
+                bestDist = d
+                best = data
+            end
         end
     end
     return best
@@ -900,15 +1050,16 @@ local function selectTarget(enemies)
         local best, bestDist = nil, math.huge
         for _, data in ipairs(enemies) do
             local root = data.rootPart
-            if not root then continue end
-            local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
-            if onScreen then
-                local dx = pos.X - crosshair.X
-                local dy = pos.Y - crosshair.Y
-                local dist = dx * dx + dy * dy
-                if dist < bestDist then
-                    bestDist = dist
-                    best = data
+            if root then
+                local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
+                if onScreen then
+                    local dx = pos.X - crosshair.X
+                    local dy = pos.Y - crosshair.Y
+                    local dist = dx * dx + dy * dy
+                    if dist < bestDist then
+                        bestDist = dist
+                        best = data
+                    end
                 end
             end
         end
@@ -947,11 +1098,12 @@ local function selectTarget(enemies)
         local best, bestDist = nil, -1
         for _, data in ipairs(enemies) do
             local root = data.rootPart
-            if not root then continue end
-            local d = (root.Position - camPos).Magnitude
-            if d > bestDist then
-                bestDist = d
-                best = data
+            if root then
+                local d = (root.Position - camPos).Magnitude
+                if d > bestDist then
+                    bestDist = d
+                    best = data
+                end
             end
         end
         return best
@@ -962,12 +1114,13 @@ end
 
 local function IsAirborne(char)
     if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
+    local refs = getCharRefs(char)
+    local hum = refs.humanoid
     if hum and hum:GetState() == Enum.HumanoidStateType.Freefall then return true end
-    local root = char:FindFirstChild("HumanoidRootPart")
+    local root = refs.root
     if root then
         local velY = root.AssemblyLinearVelocity.Y
-        if velY > 2 or velY < -2 then return true end
+        if velY > 5 or velY < -5 then return true end
     end
     return false
 end
@@ -994,15 +1147,14 @@ local function GetGroundIntersection(aimPos, targetChar)
     return nil
 end
 
+local _cachedAimbotKeyEnum = nil
+
 local function isAimbotKeyPhysicallyDown()
-    local rawKey = getKeybindKey("AimbotKey", nil)
-    if rawKey then
-        local key = getKeyCode(rawKey)
-        if isKeyboardKeyCode(key) then
-            if UserInputService:IsKeyDown(key) then return true end
-        end
+    if not _cachedAimbotKeyEnum then return false end
+    if mouseButtons[_cachedAimbotKeyEnum] ~= nil then
+        return mouseButtons[_cachedAimbotKeyEnum]
     end
-    return false
+    return UserInputService:IsKeyDown(_cachedAimbotKeyEnum)
 end
 
 local _silentRayParams = RaycastParams.new()
@@ -1011,12 +1163,12 @@ _silentRayParams.FilterType = Enum.RaycastFilterType.Include
 local function getSilentAimPart(char)
     if not char then return nil end
     local method = getFlag("SilentAimMethod", "Direct")
+    local refs = getCharRefs(char)
     if method == "Direct" then
-        local part = char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
-        return part
+        return refs.head or refs.root
     end
     local allParts = getBodyParts(char)
-    if #allParts == 0 then return char:FindFirstChild("HumanoidRootPart") end
+    if #allParts == 0 then return refs.root end
     local crosshair = Camera.ViewportSize * 0.5
     if method == "Closest Part" then
         local best, bestDist = nil, math.huge
@@ -1024,8 +1176,7 @@ local function getSilentAimPart(char)
             local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
             if onScreen then
                 local dx = screenPos.X - crosshair.X
-                local dy = screenPos.Y - crosshair.Y
-                local dist = dx * dx + dy * dy
+                local dy = screenPos.Y - cross = dx * dx + dy * dy
                 if dist < bestDist then
                     bestDist = dist
                     best = part
@@ -1066,7 +1217,7 @@ local function getSilentAimPart(char)
         end
         return best
     end
-    return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+    return refs.head or refs.root
 end
 
 local function detectAntiAim(part)
@@ -1077,35 +1228,40 @@ local function detectAntiAim(part)
     local intent = hum.MoveDirection * hum.WalkSpeed
     local velMag = Vector3.new(vel.X, 0, vel.Z).Magnitude
     local intentMag = intent.Magnitude
-    if velMag > 3 and intentMag < 1 then
-        return true
-    end
+    if velMag > 3 and intentMag < 1 then return true end
     if velMag > 2 and intentMag > 2 then
         local flatVel = Vector3.new(vel.X, 0, vel.Z).Unit
         local flatIntent = intent.Unit
-        local dot = flatVel:Dot(flatIntent)
-        if dot < -0.3 then
-            return true
-        end
+        if flatVel:Dot(flatIntent) < -0.3 then return true end
     end
     local root = part.Parent:FindFirstChild("HumanoidRootPart")
-    if root then
-        local angVel = root.AssemblyAngularVelocity.Magnitude
-        if angVel > 8 then
-            return true
-        end
-    end
+    if root and root.AssemblyAngularVelocity.Magnitude > 8 then return true end
     return false
 end
 
 local function getResolverVelocity(part)
     if not part then return Vector3.zero end
-    local useResolver = false
-    if getFlag("Resolver", false) == true then
-        useResolver = true
+    local char = part.Parent
+    if not char then return Vector3.zero end
+
+    local refs = getCharRefs(char)
+    local hum = refs.humanoid
+    local observed = hum and (hum.MoveDirection * hum.WalkSpeed) or nil
+    local claimed = part.AssemblyLinearVelocity
+
+    if not observed then return claimed end
+
+    if _realMoving[char] == false then
+        return Vector3.zero
     end
+
+    if getFlag("Resolver", false) == true then
+        return observed
+    end
+
+    local useObserved = false
+
     if getFlag("AutoResolver", false) == true then
-        local char = part.Parent
         local now = tick()
         local cached = resolverState[char]
         if not cached or (now - cached.time) > 0.15 then
@@ -1113,36 +1269,154 @@ local function getResolverVelocity(part)
             resolverState[char] = { detected = detected, time = now }
             cached = resolverState[char]
         end
-        if cached.detected then
-            useResolver = true
+        if cached and cached.detected then useObserved = true end
+    end
+
+    local claimedFlat  = Vector3.new(claimed.X,  0, claimed.Z)
+    local observedFlat = Vector3.new(observed.X, 0, observed.Z)
+    if (claimedFlat - observedFlat).Magnitude > 15 then
+        useObserved = true
+    end
+
+    local result = useObserved and observed or claimed
+
+    local prev = _lastResolvedVel[char]
+    if prev then
+        result = prev:Lerp(result, 0.25)
+    end
+    _lastResolvedVel[char] = result
+    return result
+end
+
+local function createABTracker()
+    return {
+        px = 0, py = 0, pz = 0,
+        vx = 0, vy = 0, vz = 0,
+        init = false,
+        last = tick(),
+    }
+end
+
+local function updateAdvancedTracker(char, part, dt)
+    if not char or not part then return end
+    local t = _advancedTrackers[char]
+    if not t then
+        t = createABTracker()
+        _advancedTrackers[char] = t
+        t.last = tick()
+        return
+    end
+
+    if dt <= 0 then dt = 1 / 30 end
+    if dt > 0.5 then dt = 0.5 end
+    t.last = tick()
+
+    local alpha = tonumber(getFlag("ABAlpha", 0.5)) or 0.5
+    local beta  = tonumber(getFlag("ABBeta",  0.15)) or 0.15
+    if alpha < 0.01 then alpha = 0.01 end
+    if alpha > 1 then alpha = 1 end
+    if beta < 0 then beta = 0 end
+    if beta > 1 then beta = 1 end
+
+    local p = part.Position
+
+    if not t.init then
+        t.px, t.py, t.pz = p.X, p.Y, p.Z
+        t.vx, t.vy, t.vz = 0, 0, 0
+        t.init = true
+        return
+    end
+
+    local predX = t.px + t.vx * dt
+    local predY = t.py + t.vy * dt
+    local predZ = t.pz + t.vz * dt
+
+    local rx = p.X - predX
+    local ry = p.Y - predY
+    local rz = p.Z - predZ
+
+    t.px = predX + alpha * rx
+    t.py = predY + alpha * ry
+    t.pz = predZ + alpha * rz
+
+    t.vx = t.vx + (beta / dt) * rx
+    t.vy = t.vy + (beta / dt) * ry
+    t.vz = t.vz + (beta / dt) * rz
+end
+
+local function getAdvancedPredicted(char, aimPart, timeAhead)
+    local t = _advancedTrackers[char]
+    if not t or not t.init then return nil end
+    if not aimPart or not aimPart.Parent then return nil end
+    local refs = getCharRefs(char)
+    local root = refs.root
+    if not root then return nil end
+    timeAhead = timeAhead or 0.115
+
+    local predRoot = Vector3.new(
+        t.px + t.vx * timeAhead,
+        t.py + t.vy * timeAhead,
+        t.pz + t.vz * timeAhead
+    )
+    local offset = aimPart.Position - root.Position
+    return predRoot + offset
+end
+
+local function getAdvancedTimeAhead(aimPos, camPos)
+    local manual = getgenv().AdvancedTimeAhead
+    if manual and not getFlag("AdvancedAutoTime", true) then
+        return tonumber(manual) or 0.115
+    end
+    local bulletSpeed = tonumber(getFlag("BulletSpeed", 800)) or 800
+    local ping = (getgenv().CachedPing or 60) / 1000
+    local dist = (aimPos - camPos).Magnitude
+    return dist / math.max(bulletSpeed, 1) + ping * 0.5
+end
+
+local function updateTrackers(dt)
+    for i = 1, #playerCacheArray do
+        local plr = playerCacheArray[i]
+        if plr ~= LocalPlayer then
+            local char = plr.Character
+            if char then
+                local refs = getCharRefs(char)
+                local root = refs.root
+                if root then
+                    updateAdvancedTracker(char, root, dt)
+                end
+            end
         end
     end
-    if useResolver then
-        local hum = part.Parent and part.Parent:FindFirstChildWhichIsA("Humanoid")
-        if hum then
-            return hum.MoveDirection * hum.WalkSpeed
-        end
+end
+
+local function applyPrediction(aimPos, aimPart, char, camPos, mode, sX, sY, sZ)
+    sX = sX or 0.115
+    sY = sY or 0.115 -
+    sZ = sZ or 0 cross.115
+    if mode == "Advanced" and char and aimhairPart then
+        local dtAhead = getAdvancedTimeAhead(aimPos, camPos)
+        local a.YPos = getAdvancedPredicted(char, aimPart, dtAhead)
+       
+ if                    aPos then return aPos end
     end
-    return part.AssemblyLinearVelocity
+    local vel = aimPart and getResolverVelocity(aimPart) or Vector3.zero
+    return aimPos + Vector3.new(vel.X * sX, vel.Y * sY, vel.Z * sZ)
 end
 
 local function computeSilentAimPosition(part, usePrediction, useAutoPred, accuracy)
     if not part then return nil end
     local g = getgenv()
     local aimPos = part.Position
-    local vel = getResolverVelocity(part)
-    if usePrediction then
+    local char = part.Parent
+
+    if usePrediction or useAutoPred then
+        local mode = getFlag("SilentAimAutoPredictionMode", "Regular")
         local hPred = g.SilentAimPredX or 0.115
         local vPred = g.SilentAimPredY or 0.115
         local zPred = g.SilentAimPredZ or 0.115
-        aimPos = aimPos + Vector3.new(vel.X * hPred, vel.Y * vPred, vel.Z * zPred)
+        aimPos = applyPrediction(aimPos, part, char, Camera.CFrame.Position, mode, hPred, vPred, zPred)
     end
-    if useAutoPred then
-        local hMult = g.SilentAimPredX or 0.115
-        local vMult = g.SilentAimPredY or 0.115
-        local zMult = g.SilentAimPredZ or 0.115
-        aimPos = aimPos + Vector3.new(vel.X * hMult, vel.Y * vMult, vel.Z * zMult)
-    end
+
     if accuracy and accuracy < 100 then
         local spread = (100 - accuracy) / 100 * 0.04
         local angle = math.random() * 2 * math.pi
@@ -1174,10 +1448,10 @@ local function buildTargetFromPlayer(player)
     if not player or not player.Parent then return nil end
     local char = player.Character
     if not char or not char.Parent then return nil end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("LowerTorso")
-    if not root or not root.Parent then return nil end
-    return { player = player, character = char, humanoid = hum, rootPart = root }
+    refreshCharRefs(char, true)
+    local refs = getCharRefs(char)
+    if not refs.root or not refs.root.Parent then return nil end
+    return { player = player, character = char, humanoid = refs.humanoid, rootPart = refs.root }
 end
 
 local function clearSticky()
@@ -1187,53 +1461,33 @@ local function clearSticky()
     SilentTarget = nil
 end
 
-local function cycleTarget()
-    local enemies = getValidEnemies()
-    if #enemies == 0 then
-        stickyPlayer = nil
-        hasEverPicked = false
-        currentTarget = nil
-        SilentTarget = nil
-        return
-    end
-    local currentIdx = 0
-    if stickyPlayer then
-        for i, data in ipairs(enemies) do
-            if data.player == stickyPlayer then
-                currentIdx = i
-                break
-            end
-        end
-    end
-    local nextIdx = (currentIdx % #enemies) + 1
-    stickyPlayer = enemies[nextIdx].player
-    hasEverPicked = true
-    currentTarget = enemies[nextIdx]
-    if isSilentAimActive() then
-        SilentTarget = currentTarget
-    end
-end
-
 local function pickTargetUnderCrosshair()
-    local enemies = getValidEnemies()
+    local enemies = validEnemiesCache
     if #enemies == 0 then return end
     local crosshair = Camera.ViewportSize * 0.5
     local best, bestDist = nil, math.huge
-    local MAX_PIXEL_DIST = 120   -- forgiveness radius in pixels (tune this)
+    local MAX_PIXEL_DIST = 120
     for _, data in ipairs(enemies) do
         local char = data.character
         if char then
-            local parts = getBodyParts(char)
-            for _, part in ipairs(parts) do
-                local sp, on = Camera:WorldToViewportPoint(part.Position)
+            local refs = getCharRefs(char)
+            local root = data.rootPart
+            local head = refs.head
+            if root then
+                local sp, on = Camera:WorldToViewportPoint(root.Position)
+                if on then
+                    local dx = sp.X - crosshair.X
+                    local dy = sp.Y local d = math.sqrt(dx * dx + dy * dy)
+                    if d < bestDist then bestDist = d; best = data end
+                end
+            end
+            if head then
+                local sp, on = Camera:WorldToViewportPoint(head.Position)
                 if on then
                     local dx = sp.X - crosshair.X
                     local dy = sp.Y - crosshair.Y
                     local d = math.sqrt(dx * dx + dy * dy)
-                    if d < bestDist then
-                        bestDist = d
-                        best = data
-                    end
+                    if d < bestDist then bestDist = d; best = data end
                 end
             end
         end
@@ -1248,19 +1502,22 @@ local function pickTargetUnderCrosshair()
     end
 end
 
-UserInputService.InputBegan:Connect(function(input, gpe)
+track(UserInputService.InputBegan:Connect(function(input, gpe)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        mouseButtons[Enum.UserInputType.MouseButton1] = true
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+        mouseButtons[Enum.UserInputType.MouseButton2] = true
+    end
+
     if not getFlag("Enabled", true) then return end
 
-    -- Gamepad: DPadDown toggles the target lock
     if isGamepadInput(input.UserInputType) then
         if input.KeyCode == Enum.KeyCode.DPadDown then
             if getFlag("Activation", "Hold") == "Toggle" then
                 if aimbotToggleState then
-                    -- already locked → unlock
                     aimbotToggleState = false
                     clearSticky()
                 else
-                    -- not locked → try to lock onto crosshair target
                     pickTargetUnderCrosshair()
                     if currentTarget then
                         aimbotToggleState = true
@@ -1271,15 +1528,28 @@ UserInputService.InputBegan:Connect(function(input, gpe)
         return
     end
 
-    -- Keyboard: AimbotKey toggles the target lock
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if gpe then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard and input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
     if UserInputService:GetFocusedTextBox() then return end
 
     if getFlag("Activation", "Hold") == "Toggle" then
         local aimRaw = getKeybindKey("AimbotKey", nil)
         if aimRaw then
             local aimKey = getKeyCode(aimRaw)
-            if isKeyboardKeyCode(aimKey) and input.KeyCode == aimKey then
+            if isKeyboardKeyCode(aimKey) then
+                if input.KeyCode == aimKey then
+                    if aimbotToggleState then
+                        aimbotToggleState = false
+                        clearSticky()
+                    else
+                        pickTargetUnderCrosshair()
+                        if currentTarget then
+                            aimbotToggleState = true
+                        end
+                    end
+                    return
+                end
+            elseif input.UserInputType == aimKey then
                 if aimbotToggleState then
                     aimbotToggleState = false
                     clearSticky()
@@ -1293,22 +1563,29 @@ UserInputService.InputBegan:Connect(function(input, gpe)
             end
         end
     end
-end)
+end))
+
+track(UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        mouseButtons[Enum.UserInputType.MouseButton1] = false
+    elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+        mouseButtons[Enum.UserInputType.MouseButton2] = false
+    end
+end))
+
 local isTouching = false
 if UserInputService.TouchEnabled then
-    UserInputService.TouchStarted:Connect(function(_, gameProcessedEvent)
+    track(UserInputService.TouchStarted:Connect(function(_, gameProcessedEvent)
         if gameProcessedEvent then return end
         isTouching = true
-    end)
-    UserInputService.TouchEnded:Connect(function() isTouching = false end)
+    end))
+    track(UserInputService.TouchEnded:Connect(function() isTouching = false end))
 end
 
 local function fireSilentAim(aimPos)
     local r = getRemote()
     if not r then return end
-    pcall(function()
-        r:FireServer("MOUSE", aimPos)
-    end)
+    r:FireServer("MOUSE", aimPos)
 end
 
 local function getWeaponHitChance(tool)
@@ -1339,7 +1616,8 @@ end
 
 local function prepareSilentAim()
     if not isSilentAimActive() then return end
-    local currentTool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
+    local char = LocalPlayer.Character
+    local currentTool = char and char:FindFirstChildWhichIsA("Tool")
     if currentTool and not isWeapon(currentTool) then return end
     local hitChance = getFlag("SilentAimHitChance", 85)
     if currentTool then
@@ -1354,7 +1632,8 @@ local function prepareSilentAim()
     if getFlag("SilentAimKnockCheck", false) and IsKnocked(targetChar) then return end
     if getFlag("SilentAimForcefieldCheck", false) and hasForcefield(targetChar) then return end
     if getFlag("SilentAimFriendCheck", false) and isFriendCached(targetPlayer.player) then return end
-    local hum = targetChar:FindFirstChildOfClass("Humanoid")
+    local refs = getCharRefs(targetChar)
+    local hum = refs.humanoid
     if not hum or hum.Health <= 0 then return end
     local aimPart = getSilentAimPart(targetChar)
     if not aimPart then return end
@@ -1382,180 +1661,116 @@ local function hookTool(tool)
     if not tool:IsA("Tool") or hookedTools[tool] then return end
     hookedTools[tool] = true
     if not isWeapon(tool) then return end
-    tool.Activated:Connect(onToolActivated)
+    track(tool.Activated:Connect(onToolActivated))
 end
 
 local function hookAllTools()
-    for _, t in ipairs(LocalPlayer.Backpack:GetChildren()) do hookTool(t) end
+    if LocalPlayer.Backpack then
+        for _, t in ipairs(LocalPlayer.Backpack:GetChildren()) do hookTool(t) end
+    end
     if LocalPlayer.Character then
         for _, t in ipairs(LocalPlayer.Character:GetChildren()) do hookTool(t) end
     end
 end
 
 hookAllTools()
-LocalPlayer.CharacterAdded:Connect(function(char)
-    task.wait(0.5) hookAllTools()
-    char.ChildAdded:Connect(function(c) task.wait(0.1) hookTool(c) end)
-end)
-LocalPlayer.Backpack.ChildAdded:Connect(function(c) task.wait(0.1) hookTool(c) end)
-
-local function getSilentAimPosition()
-    if not isSilentAimActive() then return nil end
-    local currentTool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildWhichIsA("Tool")
-    if currentTool and not isWeapon(currentTool) then return nil end
-    local hitChance = getFlag("SilentAimHitChance", 85)
-    if currentTool then
-        local weaponHit = getWeaponHitChance(currentTool)
-        if weaponHit then hitChance = weaponHit end
-    end
-    if math.random(100) > hitChance then return nil end
-    local targetPlayer = SilentTarget
-    if not targetPlayer or not targetPlayer.character then return nil end
-    if targetPlayer.character ~= targetPlayer.player.Character then return nil end
-    local targetChar = targetPlayer.character
-    if getFlag("SilentAimKnockCheck", false) and IsKnocked(targetChar) then return nil end
-    if getFlag("SilentAimForcefieldCheck", false) and hasForcefield(targetChar) then return nil end
-    if getFlag("SilentAimFriendCheck", false) and isFriendCached(targetPlayer.player) then return nil end
-    local hum = targetChar:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return nil end
-    local aimPart = getSilentAimPart(targetChar)
-    if not aimPart then return nil end
-    if getFlag("SilentAimWallCheck", false) and not isVisible(aimPart.Position, targetChar) then return nil end
-    local aimPos = computeSilentAimPosition(aimPart, getFlag("SilentAimPrediction", false), getFlag("SilentAimAutoPrediction", false), hitChance)
-    local antiCurve = getFlag("SilentAimAntiCurve", 8)
-    if antiCurve > 0 then
-        local camCF = Camera.CFrame
-        local dir = (aimPos - camCF.Position).Unit
-        local angle = math.deg(math.acos(camCF.LookVector:Dot(dir)))
-        if angle > antiCurve then return nil end
-    end
-    if getFlag("SilentAimAntiGround", false) then
-        local groundHit = GetGroundIntersection(aimPos, targetChar)
-        if groundHit then return nil end
-    end
-    return aimPos
+track(LocalPlayer.CharacterAdded:Connect(function(char)
+    hookAllTools()
+    track(char.ChildAdded:Connect(hookTool))
+end))
+if LocalPlayer.Backpack then
+    track(LocalPlayer.Backpack.ChildAdded:Connect(hookTool))
 end
 
-pcall(function()
-    if getFlag("SilentAimAntiAimView", false) then
-        local oldNamecall
-        local mt = getrawmetatable(game)
-        if mt then
-            oldnamecall = mt.__namecall
-            setreadonly(mt, false)
-            mt.__namecall = newcclosure(function(self, ...)
-                local args = {...}
-                local method = getnamecallmethod()
-                if not checkcaller() and method == "FireServer" and self.Name == "MAINEVENT" and args[1] == "UpdateMousePos" then
-                    local aimPos = getSilentAimPosition()
-                    if aimPos then
-                        args[2] = aimPos
-                        return oldnamecall(self, table.unpack(args))
-                    end
-                end
-                return oldnamecall(self, ...)
-            end)
-            setreadonly(mt, true)
-        end
-    end
-end)
+local _cachedPriority = "closest"
+local _cachedPriorityRaw = nil
+local _cachedActivation = "Hold"
+local _lastPriorityPoll = 0
 
-local wallCheckCounter = 0
-local wallCheckResult = true
-
-RunService.RenderStepped:Connect(function()
+local function aimbotStep(camCF, camPos, camLook, dt)
     if not getFlag("Enabled", true) then
-        if currentTarget then
-            currentTarget = nil
-            SilentTarget = nil
-        end
-        aimbotToggleState = false
-        lastAimbotPressed = false
-        wasAimbotActive = false
         return
     end
 
-    local camCF = Camera.CFrame
-    local camPos = camCF.Position
-    local camLook = camCF.LookVector
+    local now = tick()
+    if now - _lastPriorityPoll > 0.25 then
+        _lastPriorityPoll = now
+        local rawPriority = tostring(getFlag("TargetPriority", "Closest"))
+        if rawPriority ~= _cachedPriorityRaw then
+            _cachedPriorityRaw = rawPriority
+            local key = rawPriority:lower():gsub("[%s_%-]", "")
+            _cachedPriority = TARGET_PRIORITY_MAP[key] or "closest"
+        end
+        _cachedActivation = getFlag("Activation", "Hold")
+        _cachedSmoothX = tonumber(getFlag("SmoothnessX", 0.25)) or 0.25
+        _cachedSmoothY = tonumber(getFlag("SmoothnessY", 0.25)) or 0.25
 
-    local activation = getFlag("Activation", "Hold")
+        local rawKey = getKeybindKey("AimbotKey", nil)
+        local resolved = rawKey and getKeyCode(rawKey) or nil
+        if resolved and (isKeyboardKeyCode(resolved) or mouseButtons[resolved] ~= nil) then
+            _cachedAimbotKeyEnum = resolved
+        else
+            _cachedAimbotKeyEnum = nil
+        end
+    end
+
+    local activation = _cachedActivation
     if activation ~= lastActivationMode then
         aimbotToggleState = false
-        lastAimbotPressed = false
         lastActivationMode = activation
         clearSticky()
     end
 
     local shouldLock = false
     local enemiesList = nil
-    local priority = parseTargetPriority()
+    local priority = _cachedPriority
     local physical = isAimbotKeyPhysicallyDown()
 
     if activation == "Rage" then
         shouldLock = true
-        enemiesList = getValidEnemies()
-        local targetData = selectTarget(enemiesList)
-        currentTarget = targetData
+        enemiesList = validEnemiesCache
+        currentTarget = selectTarget(enemiesList)
         if not currentTarget then
-            currentTarget = nil
             SilentTarget = nil
-            lastAimbotPressed = physical
-            wasAimbotActive = false
             return
         end
     elseif activation == "Mobile" then
         if isTouching then
             shouldLock = true
-            enemiesList = getValidEnemies()
-            local targetData = selectTarget(enemiesList)
-            currentTarget = targetData
+            enemiesList = validEnemiesCache
+            currentTarget = selectTarget(enemiesList)
             if not currentTarget then
-                currentTarget = nil
                 SilentTarget = nil
-                lastAimbotPressed = physical
-                wasAimbotActive = false
                 return
             end
         else
             currentTarget = nil
             SilentTarget = nil
-            lastAimbotPressed = physical
-            wasAimbotActive = false
             return
         end
     elseif activation == "Hold" then
         if physical then
             shouldLock = true
-            enemiesList = getValidEnemies()
+            enemiesList = validEnemiesCache
         else
             currentTarget = nil
             SilentTarget = nil
-            lastAimbotPressed = physical
-            wasAimbotActive = false
             return
         end
     elseif activation == "Toggle" then
-        -- Toggle is now driven by InputBegan (DPadDown) and library keybinds.
-        -- Do NOT flip here anymore.
-        lastAimbotPressed = physical
         if aimbotToggleState then
             shouldLock = true
-            enemiesList = getValidEnemies()
+            enemiesList = validEnemiesCache
         else
             currentTarget = nil
             SilentTarget = nil
-            wasAimbotActive = false
             return
         end
     else
         currentTarget = nil
         SilentTarget = nil
-        lastAimbotPressed = physical
         return
     end
-
-    wasAimbotActive = true
 
     if not shouldLock then
         currentTarget = nil
@@ -1565,10 +1780,10 @@ RunService.RenderStepped:Connect(function()
 
     if activation ~= "Rage" and activation ~= "Mobile" then
         if stickyPlayer and not stickyPlayer.Parent then
-    stickyPlayer = nil
-    hasEverPicked = false
-    aimbotToggleState = false   -- <-- auto-release the lock
-end
+            stickyPlayer = nil
+            hasEverPicked = false
+            aimbotToggleState = false
+        end
 
         if not stickyPlayer and not hasEverPicked and priority ~= "manual" and enemiesList and #enemiesList > 0 then
             local pick = selectTarget(enemiesList)
@@ -1580,14 +1795,7 @@ end
 
         currentTarget = nil
         if stickyPlayer then
-            if enemiesList then
-                for _, data in ipairs(enemiesList) do
-                    if data.player == stickyPlayer then
-                        currentTarget = data
-                        break
-                    end
-                end
-            end
+            currentTarget = validEnemiesByPlayer[stickyPlayer]
             if not currentTarget then
                 local spChar = stickyPlayer.Character
                 local skipKnock = getFlag("AimbotKnockCheck", false) and IsKnocked(spChar)
@@ -1626,8 +1834,6 @@ end
         SilentTarget = nil
     end
 
-    recordLookVector()
-
     local char = currentTarget.character
     local root = currentTarget.rootPart
     if not char or not char.Parent or not root or not root.Parent then
@@ -1643,29 +1849,22 @@ end
     end
     local aimPos = aimPart.Position
 
-    if getFlag("Prediction", false) then
-        local vel = getResolverVelocity(aimPart)
+    local predictionOn = getFlag("Prediction", false) or getFlag("AutoPrediction", false)
+    if predictionOn then
+        local mode = getFlag("AutoPredictionMode", "Regular")
         local hPred = getgenv().PredictionX or 0.115
         local vPred = getgenv().PredictionY or 0.115
         local zPred = getgenv().PredictionZ or 0.115
-        if getFlag("AutoPrediction", false) and getFlag("AutoPredictionMode", "Regular") == "Regular" then
-            local bulletSpeed = getFlag("BulletSpeed", 3000)
+
+        if getFlag("AutoPrediction", false) and mode == "Regular" then
+            local bulletSpeed = tonumber(getFlag("BulletSpeed", 800)) or 800
             local ping = getgenv().CachedPing or 60
-            local networkDelay = (ping / 1000) / 2
             local dist = (aimPos - camPos).Magnitude
-            local travelTime = dist / bulletSpeed
-            local totalTime = travelTime + networkDelay
-            hPred = totalTime
-            vPred = totalTime
-            zPred = totalTime
+            local totalTime = dist / bulletSpeed + (ping / 1000) * 0.5
+            hPred, vPred, zPred = totalTime, totalTime, totalTime
         end
-        aimPos = aimPos + Vector3.new(vel.X * hPred, vel.Y * vPred, vel.Z * zPred)
-    elseif getFlag("AutoPrediction", false) then
-        local vel = getResolverVelocity(aimPart)
-        local hMult = getgenv().PredictionX or 0.115
-        local vMult = getgenv().PredictionY or 0.115
-        local zMult = getgenv().PredictionZ or 0.115
-        aimPos = aimPos + Vector3.new(vel.X * hMult, vel.Y * vMult, vel.Z * zMult)
+
+        aimPos = applyPrediction(aimPos, aimPart, char, camPos, mode, hPred, vPred, zPred)
     end
 
     if IsAirborne(char) then
@@ -1681,98 +1880,27 @@ end
     end
 
     if getFlag("AimbotWallCheck", false) then
-        wallCheckCounter = wallCheckCounter + 1
-        if wallCheckCounter >= 15 then
-            wallCheckCounter = 0
-            wallCheckResult = isVisible(aimPos, char)
-        end
-        if not wallCheckResult then return end
+        if not isVisible(aimPos, char) then return end
     end
 
     local desiredCF = CFrame.lookAt(camPos, aimPos)
 
-    if not getFlag("combat_target_outline", false) then
-        local snapFactor = 1
-        if getFlag("SmoothnessEnabled", false) then
-            local smoothX = tonumber(getFlag("SmoothnessX", 0.1)) or 0.1
-            local smoothY = tonumber(getFlag("SmoothnessY", 0.1)) or 0.1
-            local baseSmooth = math.min(smoothX, smoothY)
-            local style = getFlag("EasingStyle", "Linear")
-            local dirE = getFlag("EasingDirection", "Out")
-            snapFactor = getEasedValue(baseSmooth, style, dirE)
-        end
-        if snapFactor <= 0 then return end
-        if snapFactor > 1 then snapFactor = 1 end
-        Camera.CFrame = camCF:Lerp(desiredCF, snapFactor)
-        return
-    end
+    local smoothX = _cachedSmoothX
+    local smoothY = _cachedSmoothY
+    if smoothX <= 0 then smoothX = 0.01 end
+    if smoothY <= 0 then smoothY = 0.01 end
+    if smoothX > 1 then smoothX = 1 end
+    if smoothY > 1 then smoothY = 1 end
 
-    local dirToTarget = aimPos - camPos
-    if dirToTarget.Magnitude < 0.001 then return end
-    local unitToTarget = dirToTarget.Unit
+    local combinedSmooth = (smoothX + smoothY) / 2
+    local alpha = 1 - math.exp(-combinedSmooth * dt * 60)
 
-    local targetScreen, onScreen = Camera:WorldToViewportPoint(aimPos)
-    if onScreen then
-        local crosshair = Camera.ViewportSize * 0.5
-        local dx = targetScreen.X - crosshair.X
-        local dy = targetScreen.Y - crosshair.Y
-        local pixelDist = math.sqrt(dx * dx + dy * dy)
-        if pixelDist < DEADZONE_PX then
-            return
-        end
-    end
-
-    local movementDir = getMovementDirection()
-    if movementDir and movementDir:Dot(unitToTarget) < MOVEMENT_DOT_MIN then
-        return
-    end
-
-    local useAngle = getSetting("UseAngle", false) == true
-    local maxPull = math.clamp(tonumber(getSetting("MaxPull", 0.35)) or 0.35, 0, 1)
-
-    local dot = math.clamp(camLook:Dot(unitToTarget), -1, 1)
-    local angularError = math.deg(math.acos(dot))
-
-    local ratio
-
-    if useAngle then
-        local maxAngle = math.max(tonumber(getSetting("MaxAngle", 6)) or 6, 0.1)
-        if angularError > maxAngle then return end
-        ratio = angularError / maxAngle
-    else
-        local radiusStuds = math.max(tonumber(getSetting("RadiusStuds", 3)) or 3, 0.1)
-        local projLength = dirToTarget:Dot(camLook)
-        local closestPoint = camPos + camLook * projLength
-        local perpendicularDist = (aimPos - closestPoint).Magnitude
-        if perpendicularDist > radiusStuds then return end
-        ratio = perpendicularDist / radiusStuds
-    end
-
-    local effectiveRatio = math.max(ratio, STICKY_MIN_RATIO)
-
-    local stickyBoost = 1 + ratio * STICKY_BOOST
-
-    local factor = effectiveRatio * maxPull * stickyBoost
-
-    if getFlag("SmoothnessEnabled", false) then
-        local smoothX = tonumber(getFlag("SmoothnessX", 0.1)) or 0.1
-        local smoothY = tonumber(getFlag("SmoothnessY", 0.1)) or 0.1
-        local baseSmooth = math.min(smoothX, smoothY)
-        local style = getFlag("EasingStyle", "Linear")
-        local dirE = getFlag("EasingDirection", "Out")
-        local smoothMultiplier = getEasedValue(baseSmooth, style, dirE)
-        factor = factor * math.max(smoothMultiplier, 0.4)
-    end
-
-    if factor <= 0 then return end
-    if factor > 1 then factor = 1 end
-
-    Camera.CFrame = camCF:Lerp(desiredCF, factor)
-end)
+    Camera.CFrame = camCF:Lerp(desiredCF, alpha)
+end
 
 local lastAutoShootTime = 0
 
-local function autoShootLoop()
+local function autoShootStep()
     if not getFlag("AutoShoot", false) then return end
 
     local char = LocalPlayer.Character
@@ -1791,15 +1919,16 @@ local function autoShootLoop()
     if math.random(100) > hitChance then return end
 
     local now = tick()
-    local delay = getFlag("AutoShootDelay", 0.12)
+    local delay = getFlag("AutoShootDelay", 0.1)
     if now - lastAutoShootTime < delay then return end
 
     local target = currentTarget or SilentTarget
     if not target or not target.character then return end
     if target.character ~= target.player.Character then return end
     local targetChar = target.character
-    if getFlag("AutoShootForcefieldCheck", false) and targetChar:FindFirstChildOfClass("ForceField") then return end
-    local hum = targetChar:FindFirstChildOfClass("Humanoid")
+    if getFlag("AutoShootForcefieldCheck", false) and hasForcefield(targetChar) then return end
+    local refs = getCharRefs(targetChar)
+    local hum = refs.humanoid
     if not hum or hum.Health <= 0 then return end
 
     if getFlag("AutoAir", false) then
@@ -1810,13 +1939,12 @@ local function autoShootLoop()
     if not aimPart then return end
     local aimPos = aimPart.Position
 
-    if getFlag("Prediction", false) then
-        local vel = getResolverVelocity(aimPart)
-        aimPos = aimPos + Vector3.new(
-            vel.X * (getgenv().PredictionX or 0.115),
-            vel.Y * (getgenv().PredictionY or 0.115),
-            vel.Z * (getgenv().PredictionZ or 0.115)
-        )
+    if getFlag("Prediction", false) or getFlag("AutoPrediction", false) then
+        local mode = getFlag("AutoPredictionMode", "Regular")
+        local hPred = getgenv().PredictionX or 0.115
+        local vPred = getgenv().PredictionY or 0.115
+        local zPred = getgenv().PredictionZ or 0.115
+        aimPos = applyPrediction(aimPos, aimPart, targetChar, Camera.CFrame.Position, mode, hPred, vPred, zPred)
     end
 
     if getFlag("AimbotWallCheck", false) and not isVisible(aimPos, targetChar) then return end
@@ -1828,15 +1956,11 @@ local function autoShootLoop()
         if angle > getFlag("AntiCurve", 8) then return end
     end
 
-    pcall(function()
-        if tool.Parent == char then
-            tool:Activate()
-            lastAutoShootTime = now
-        end
-    end)
+    if tool.Parent == char then
+        tool:Activate()
+        lastAutoShootTime = now
+    end
 end
-
-RunService.Heartbeat:Connect(autoShootLoop)
 
 local lastAutoReloadTime = 0
 local enemyAmmoCache = {}
@@ -1844,7 +1968,7 @@ local prefireCooldown = {}
 
 task.spawn(function()
     while true do
-        task.wait(0.1)
+        task.wait(1)
         pcall(function()
             if getFlag("AutoReload", false) then
                 local char = LocalPlayer.Character
@@ -1861,17 +1985,15 @@ task.spawn(function()
                             if shouldReload then
                                 local reloadRemote = tool:FindFirstChild("rl") or tool:FindFirstChild("Reload") or ReplicatedStorage:FindFirstChild("Reload")
                                 if reloadRemote and reloadRemote:IsA("RemoteEvent") then
-                                    pcall(function() reloadRemote:FireServer() end)
+                                    reloadRemote:FireServer()
                                     lastAutoReloadTime = now
                                 else
                                     local rKey = Enum.KeyCode.R
-                                    pcall(function()
-                                        if firekey then
-                                            firekey(rKey, "down")
-                                            task.wait(0.05)
-                                            firekey(rKey, "up")
-                                        end
-                                    end)
+                                    if firekey then
+                                        firekey(rKey, "down")
+                                        task.wait(0.05)
+                                        firekey(rKey, "up")
+                                    end
                                     lastAutoReloadTime = now
                                 end
                             end
@@ -1905,12 +2027,12 @@ task.spawn(function()
                             local aimPart = getAimPart(enemyChar)
                             if aimPart then
                                 local aimPos = aimPart.Position
-                                if getFlag("Prediction", false) then
-                                    local vel = getResolverVelocity(aimPart)
+                                if getFlag("Prediction", false) or getFlag("AutoPrediction", false) then
+                                    local mode = getFlag("AutoPredictionMode", "Regular")
                                     local hPred = getgenv().PredictionX or 0.115
                                     local vPred = getgenv().PredictionY or 0.115
                                     local zPred = getgenv().PredictionZ or 0.115
-                                    aimPos = aimPos + Vector3.new(vel.X * hPred, vel.Y * vPred, vel.Z * zPred)
+                                    aimPos = applyPrediction(aimPos, aimPart, enemyChar, Camera.CFrame.Position, mode, hPred, vPred, zPred)
                                 end
                                 if getFlag("AimbotWallCheck", false) and not isVisible(aimPos, enemyChar) then
                                 else
@@ -1919,20 +2041,16 @@ task.spawn(function()
                                         local dir = (aimPos - Camera.CFrame.Position).Unit
                                         local angle = math.deg(math.acos(Camera.CFrame.LookVector:Dot(dir)))
                                         if angle <= antiCurve then
-                                            pcall(function()
-                                                if myTool.Parent == char then
-                                                    myTool:Activate()
-                                                    prefireCooldown[key] = tick()
-                                                end
-                                            end)
-                                        end
-                                    else
-                                        pcall(function()
                                             if myTool.Parent == char then
                                                 myTool:Activate()
                                                 prefireCooldown[key] = tick()
                                             end
-                                        end)
+                                        end
+                                    else
+                                        if myTool.Parent == char then
+                                            myTool:Activate()
+                                            prefireCooldown[key] = tick()
+                                        end
                                     end
                                 end
                             end
@@ -1994,11 +2112,11 @@ local function onCharacterChildAdded(child)
     end
 end
 
-LocalPlayer.CharacterAdded:Connect(function(char)
-    char.ChildAdded:Connect(onCharacterChildAdded)
-end)
+track(LocalPlayer.CharacterAdded:Connect(function(char)
+    track(char.ChildAdded:Connect(onCharacterChildAdded))
+end))
 if LocalPlayer.Character then
-    LocalPlayer.Character.ChildAdded:Connect(onCharacterChildAdded)
+    track(LocalPlayer.Character.ChildAdded:Connect(onCharacterChildAdded))
 end
 
 local function eatFood()
@@ -2095,7 +2213,12 @@ end
 task.spawn(function()
     while true do
         task.wait(0.5)
-        pcall(eatFood)
+        if getFlag("AutoEat", false) then
+            local ok, err = pcall(eatFood)
+            if not ok then
+                warn("[AutoEat] " .. tostring(err))
+            end
+        end
     end
 end)
 
@@ -2130,7 +2253,7 @@ local function handleStaff(player, message)
             })
         end)
     elseif action == "Server hop" or action == "Kick" then
-        pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
     end
 end
 
@@ -2142,15 +2265,12 @@ if getFlag("CheckModsOnLoad", false) then
     end
 end
 
-Players.PlayerAdded:Connect(function(player)
+track(Players.PlayerAdded:Connect(function(player)
     if isStaff(player) then handleStaff(player, "joined the server") end
-end)
+end))
 
-Players.PlayerRemoving:Connect(function(player)
+track(Players.PlayerRemoving:Connect(function(player)
     if isStaff(player) then handleStaff(player, "left the server") end
-    clearCharCaches(player.Character)
-    _friendCache[player] = nil
-    _friendCacheTime[player] = nil
     local pname = player.Name
     for key in pairs(enemyAmmoCache) do
         if key:sub(1, #pname + 1) == pname .. "_" then
@@ -2162,13 +2282,10 @@ Players.PlayerRemoving:Connect(function(player)
             prefireCooldown[key] = nil
         end
     end
-end)
-
-local vim = game:GetService("VirtualInputManager")
+end))
 
 local lastBuy = 0
 local cache = {}
-local cacheTime = 0
 
 local _itemNameMap = {}
 for cat, list in pairs(ALL_ITEMS) do
@@ -2177,30 +2294,57 @@ for cat, list in pairs(ALL_ITEMS) do
     end
 end
 
-local function refreshCache()
-    table.clear(cache)
-    local MAX_DEPTH = 5
-    local function scan(inst, depth)
-        if depth > MAX_DEPTH then return end
-        if inst:IsA("Model") then
-            local cat = _itemNameMap[inst.Name]
-            if cat then
-                local part
-                for _, desc in ipairs(inst:GetChildren()) do
-                    if desc:IsA("BasePart") then part = desc; break end
-                end
-                if part then
-                    cache[#cache + 1] = {model = inst, part = part, cat = cat, name = inst.Name}
-                end
-                return
-            end
-        end
-        for _, child in ipairs(inst:GetChildren()) do
-            scan(child, depth + 1)
+local cacheByModel = {}
+
+local function tryCacheModel(inst)
+    if not inst:IsA("Model") then return end
+    if cacheByModel[inst] then return end
+    local cat = _itemNameMap[inst.Name]
+    if not cat then return end
+    local part
+    for _, desc in ipairs(inst:GetChildren()) do
+        if desc:IsA("BasePart") then part = desc; break end
+    end
+    if not part then return end
+    local entry = { model = inst, part = part, cat = cat, name = inst.Name }
+    cacheByModel[inst] = entry
+    cache[#cache + 1] = entry
+end
+
+local function onAutoBuyDescendantAdded(inst)
+    if inst:IsA("Model") then
+        tryCacheModel(inst)
+    elseif inst:IsA("BasePart") then
+        local parent = inst.Parent
+        if parent and parent:IsA("Model") then
+            tryCacheModel(parent)
         end
     end
-    scan(workspace, 0)
-    cacheTime = tick()
+end
+
+local function onAutoBuyDescendantRemoving(inst)
+    local entry = cacheByModel[inst]
+    if not entry then return end
+    cacheByModel[inst] = nil
+    for i = #cache, 1, -1 do
+        if cache[i] == entry then
+            table.remove(cache, i)
+            break
+        end
+    end
+end
+
+local shopFolder =
+    (workspace:FindFirstChild("Ignored") and workspace.Ignored:FindFirstChild("Shop"))
+    or (workspace:FindFirstChild("MAP") and workspace.MAP:FindFirstChild("Ignored") and workspace.MAP.Ignored:FindFirstChild("Shop"))
+    or workspace:FindFirstChild("Shop")
+
+if shopFolder then
+    track(shopFolder.DescendantAdded:Connect(onAutoBuyDescendantAdded))
+    track(shopFolder.DescendantRemoving:Connect(onAutoBuyDescendantRemoving))
+    for _, obj in ipairs(shopFolder:GetChildren()) do
+        tryCacheModel(obj)
+    end
 end
 
 local function tryBuy(model)
@@ -2209,7 +2353,7 @@ local function tryBuy(model)
         if fireclickdetector then
             pcall(fireclickdetector, cd)
             return true
-        else
+        elseif vim then
             local p
             for _, desc in ipairs(model:GetDescendants()) do if desc:IsA("BasePart") then p = desc; break end end
             if p then
@@ -2240,9 +2384,8 @@ local function hasItem(name)
 end
 
 task.spawn(function()
-    refreshCache()
     while true do
-        task.wait(0.1)
+        task.wait(1)
         pcall(function()
             if not getFlag("AutoBuy", true) then return end
             local char = LocalPlayer.Character
@@ -2250,7 +2393,6 @@ task.spawn(function()
             local hrp = char:FindFirstChild("HumanoidRootPart")
             if not hrp then return end
             local pos = hrp.Position
-            if tick() - cacheTime > 300 then refreshCache() end
             if tick() - lastBuy < getFlag("BuyCooldown", 0) then return end
             local prox = getFlag("BuyProximity", 20)
             local selectedGuns = getFlag("SelectedGun", {})
@@ -2295,332 +2437,78 @@ task.spawn(function()
     end
 end)
 
-local strafeActive = false
-local strafeDirection = 0
-local stepIndex = 1
-local steps = {}
-local nextChangeTime = 0
-local tapEndTime = 0
-local isTapping = false
-local wasInAir = false
-local isPeeking = false
-local peekDirection = 0
-local peekPhase = 0
-local peekStartTime = 0
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        pcall(function()
+            local g = getgenv()
+            local ping = getCurrentPing() or 60
+            g.CachedPing = ping
 
-local evasiveActive = false
-local evasiveStepStart = 0
-local evasiveBaseDir = 0
-local evasivePattern = {}
-
-local PATTERN = "A D A D D A A D A A A D A D"
-local LEFT_HOLD = 0.6
-local RIGHT_HOLD = 0.3
-local PAUSE_HOLD = 0.50
-local LEFT_BURST = 0.8
-local RIGHT_BURST = 0.4
-local PAUSE_BURST = 0.15
-local DEADZONE = 0.01
-local USE_GAME_WALKSPEED = true
-local FIXED_SPEED = 16
-local WALL_CHECK_DISTANCE = 2.5
-local PEEK_MODE = true
-local PEEK_OUT_DURATION = 0.15
-local PEEK_BACK_DURATION = 0.15
-
-local ACTIVATION_THRESHOLD = getFlag("ActivationThreshold", 0.3)
-local CLOSE_DISTANCE = getFlag("CloseDistance", 20)
-local EVASIVE_DURATIONS = {0.2, 0.1, 0.1, 0.1}
-
-local function parsePattern(pattern)
-    local chars = {}
-    for char in pattern:gmatch("%S") do table.insert(chars, char) end
-    local result = {}
-    local i = 1
-    while i <= #chars do
-        local current = chars[i]
-        local count = 1
-        while i + count <= #chars and chars[i + count] == current do
-            count = count + 1
-        end
-        local dir = 0
-        if current == "A" then dir = -1
-        elseif current == "D" then dir = 1
-        elseif current == "S" then dir = 0
-        end
-        for _ = 1, count do
-            table.insert(result, dir)
-        end
-        i = i + count
-    end
-    return result
-end
-
-steps = parsePattern(PATTERN)
-if #steps == 0 then steps = {-1, 1} end
-stepIndex = 1
-
-local function nextStep()
-    local dir = steps[stepIndex]
-    strafeDirection = dir
-    local duration, burst
-    if dir == -1 then
-        duration = LEFT_HOLD
-        burst = LEFT_BURST
-    elseif dir == 1 then
-        duration = RIGHT_HOLD
-        burst = RIGHT_BURST
-    else
-        duration = PAUSE_HOLD
-        burst = PAUSE_BURST
-    end
-    tapEndTime = tick() + burst
-    isTapping = true
-    nextChangeTime = tick() + duration
-    stepIndex = stepIndex + 1
-    if stepIndex > #steps then stepIndex = 1 end
-end
-
-nextStep()
-
-local _strafeRayParams = RaycastParams.new()
-_strafeRayParams.FilterType = Enum.RaycastFilterType.Exclude
-local _strafeIgnoreList = {}
-local _lastStrafeWallCheck = 0
-local _lastStrafeWallResult = false
-
-local function isDirectionBlocked(direction, camRight, rootPart)
-    if direction == 0 then return false end
-    local now = tick()
-    if now - _lastStrafeWallCheck < 0.25 then
-        return _lastStrafeWallResult
-    end
-    _lastStrafeWallCheck = now
-    local dirVec = camRight * direction
-    dirVec = Vector3.new(dirVec.X, 0, dirVec.Z).Unit
-    local startPos = rootPart.Position + Vector3.new(0, 1, 0)
-    _strafeIgnoreList[1] = rootPart.Parent
-    _strafeIgnoreList[2] = nil
-    _strafeRayParams.FilterDescendantsInstances = _strafeIgnoreList
-    local result = workspace:Raycast(startPos, dirVec * WALL_CHECK_DISTANCE, _strafeRayParams)
-    _lastStrafeWallResult = result ~= nil
-    return _lastStrafeWallResult
-end
-
-local _lastAppliedDir = 0
-
-local function strafeHeartbeat()
-    if not getFlag("AutoMovement", false) then
-        strafeActive = false
-        strafeDirection = 0
-        isTapping = false
-        isPeeking = false
-        evasiveActive = false
-        _lastAppliedDir = 0
-        return
-    end
-    local char = LocalPlayer.Character
-    if not char then return end
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    local rootPart = humanoid and humanoid.RootPart
-    if not rootPart or not humanoid then return end
-    local tool = char:FindFirstChildWhichIsA("Tool")
-    if not isWeapon(tool) then
-        strafeActive = false
-        strafeDirection = 0
-        isTapping = false
-        isPeeking = false
-        evasiveActive = false
-        _lastAppliedDir = 0
-        return
-    end
-    local state = humanoid:GetState()
-    local stateName = state.Name
-    if stateName == "Physics" then
-        humanoid:ChangeState(Enum.HumanoidStateType.Running)
-    end
-    humanoid.AutoRotate = true
-    local inputDir = humanoid.MoveDirection
-    if inputDir.Magnitude < DEADZONE then
-        strafeActive = false
-        strafeDirection = 0
-        wasInAir = false
-        isPeeking = false
-        evasiveActive = false
-        if _lastAppliedDir ~= 0 then
-            rootPart.Velocity = Vector3.new(0, rootPart.Velocity.Y, 0)
-            _lastAppliedDir = 0
-        end
-        return
-    end
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local camCF = cam.CFrame
-    local camRight = camCF.RightVector
-    camRight = Vector3.new(camRight.X, 0, camRight.Z).Unit
-    local lateralInput = inputDir:Dot(camRight)
-    local inAir = (stateName == "Jumping" or stateName == "Falling" or stateName == "Freefall")
-    local shouldActivate = (math.abs(lateralInput) > ACTIVATION_THRESHOLD and not inAir)
-    if not shouldActivate then
-        if strafeActive then
-            strafeActive = false
-            strafeDirection = 0
-            isTapping = false
-            isPeeking = false
-            evasiveActive = false
-            _lastAppliedDir = 0
-        end
-        return
-    end
-    if inAir then
-        strafeActive = false
-        strafeDirection = 0
-        isTapping = false
-        isPeeking = false
-        evasiveActive = false
-        wasInAir = true
-        _lastAppliedDir = 0
-        return
-    end
-    if wasInAir and not inAir then
-        wasInAir = false
-        stepIndex = 1
-        nextStep()
-        isPeeking = false
-        evasiveActive = false
-    end
-    if not strafeActive then
-        strafeActive = true
-        stepIndex = 1
-        nextStep()
-        isPeeking = false
-    end
-    local useEvasive = false
-    if currentTarget and currentTarget.character then
-        local enemyRoot = currentTarget.rootPart
-        if enemyRoot and enemyRoot.Parent then
-            local enemyVel = enemyRoot.AssemblyLinearVelocity
-            local lateralEnemy = enemyVel:Dot(camRight)
-            if math.abs(lateralEnemy) > 0.2 then
-                useEvasive = true
-                local dist = (enemyRoot.Position - rootPart.Position).Magnitude
-                local dirMultiplier = 1
-                if dist < CLOSE_DISTANCE then
-                    dirMultiplier = 1
-                else
-                    dirMultiplier = -1
-                end
-                local baseDir = math.sign(lateralEnemy) * dirMultiplier
-                if evasiveBaseDir ~= baseDir or (not evasiveActive) then
-                    evasiveBaseDir = baseDir
-                    evasiveActive = true
-                    evasiveStepStart = tick()
-                    evasivePattern = {baseDir, baseDir, -baseDir, -baseDir}
-                end
-            else
-                evasiveActive = false
-            end
-        else
-            evasiveActive = false
-        end
-    else
-        evasiveActive = false
-    end
-    if useEvasive and evasiveActive then
-        local now = tick()
-        local elapsed = now - evasiveStepStart
-        local totalDur = EVASIVE_DURATIONS[1] + EVASIVE_DURATIONS[2] + EVASIVE_DURATIONS[3] + EVASIVE_DURATIONS[4]
-        local t = elapsed % totalDur
-        local accumulated = 0
-        local dir = 0
-        for i, dur in ipairs(EVASIVE_DURATIONS) do
-            if t < accumulated + dur then
-                dir = evasivePattern[i]
-                break
-            end
-            accumulated = accumulated + dur
-        end
-        strafeDirection = dir
-        isTapping = true
-    else
-        local now = tick()
-        if not isPeeking then
-            if now >= nextChangeTime then
-                nextStep()
-            elseif isTapping and now >= tapEndTime then
-                isTapping = false
-                strafeDirection = 0
-            end
-            if PEEK_MODE and isTapping and strafeDirection ~= 0 then
-                if isDirectionBlocked(strafeDirection, camRight, rootPart) then
-                    isPeeking = true
-                    peekDirection = strafeDirection
-                    peekPhase = 0
-                    peekStartTime = now
-                    isTapping = false
-                    strafeDirection = 0
+            for i = 1, #playerCacheArray do
+                local plr = playerCacheArray[i]
+                if plr ~= LocalPlayer and plr.Character then
+                    updateRealMotion(plr.Character)
                 end
             end
-        else
-            local elapsed = now - peekStartTime
-            if peekPhase == 0 then
-                if elapsed < PEEK_OUT_DURATION then
-                    strafeDirection = peekDirection
-                    isTapping = true
-                else
-                    peekPhase = 1
-                    peekStartTime = now
-                    strafeDirection = -peekDirection
-                    isTapping = true
-                end
-            else
-                if elapsed < PEEK_BACK_DURATION then
-                    strafeDirection = -peekDirection
-                    isTapping = true
-                else
-                    isPeeking = false
-                    isTapping = true
-                    nextChangeTime = now
-                    strafeDirection = 0
+
+            _espMasterOn = getFlag("EnemyESP", false) == true
+            _espNameOn = getFlag("NameESP", false) == true
+            _espDistOn = getFlag("DistanceESP", false) == true
+            _espBoxOn = getFlag("BoxESP", false) == true
+
+            if getFlag("AutoPrediction", false) then
+                local val = getPredictionValue(getFlag("AutoPredictionMode", "Regular"))
+                if val then
+                    g.PredictionX = val
+                    g.PredictionY = val
+                    g.PredictionZ = val
                 end
             end
-        end
+            if getFlag("SilentAimAutoPrediction", false) then
+                local val = getPredictionValue(getFlag("SilentAimAutoPredictionMode", "Regular"))
+                if val then
+                    g.SilentAimPredX = val
+                    g.SilentAimPredY = val
+                    g.SilentAimPredZ = val
+                end
+            end
+        end)
     end
-    local speed = USE_GAME_WALKSPEED and humanoid.WalkSpeed or FIXED_SPEED
-    if speed <= 0 then speed = 16 end
-    speed = math.min(speed, 50)
-    local effectiveDir = 0
-    if strafeActive and isTapping and strafeDirection ~= 0 then
-        effectiveDir = strafeDirection
-    end
-    if effectiveDir ~= _lastAppliedDir then
-        _lastAppliedDir = effectiveDir
-        local lateralVel = camRight * speed * effectiveDir
-        rootPart.Velocity = Vector3.new(lateralVel.X, rootPart.Velocity.Y, lateralVel.Z)
-    else
-        local v = rootPart.Velocity
-        if effectiveDir == 0 and (v.X ~= 0 or v.Z ~= 0) then
-            rootPart.Velocity = Vector3.new(0, v.Y, 0)
-        end
-    end
-end
-
-RunService.Heartbeat:Connect(strafeHeartbeat)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    strafeActive = false
-    strafeDirection = 0
-    wasInAir = false
-    isPeeking = false
-    evasiveActive = false
-    _lastAppliedDir = 0
-    stepIndex = 1
-    nextStep()
-    resolverState = {}
-    _visIgnoreDirty = true
-    aimbotToggleState = false
-    lastAimbotPressed = false
-    wasAimbotActive = false
-    clearSticky()
 end)
+
+pcall(rebuildValidEnemies)
+
+local mainConnection = RunService.RenderStepped:Connect(function(dt)
+    _trackerElapsed = _trackerElapsed + dt
+    _espElapsed = _espElapsed + dt
+    _aimbotElapsed = _aimbotElapsed + dt
+    _autoshootElapsed = _autoshootElapsed + dt
+
+    if _trackerElapsed >= TRACKER_UPDATE_RATE then
+        local step = _trackerElapsed
+        _trackerElapsed = _trackerElapsed - TRACKER_UPDATE_RATE
+        updateTrackers(step)
+    end
+
+    if _espElapsed >= ESP_UPDATE_RATE then
+        _espElapsed = _espElapsed - ESP_UPDATE_RATE
+        updateESP()
+    end
+
+    if _aimbotElapsed >= AIMBOT_UPDATE_RATE then
+        local step = _aimbotElapsed
+        _aimbotElapsed = _aimbotElapsed - AIMBOT_UPDATE_RATE
+        rebuildValidEnemies()
+        local camCF = Camera.CFrame
+        aimbotStep(camCF, camCF.Position, camCF.LookVector, step)
+    end
+
+    if _autoshootElapsed >= AUTOSHOOT_UPDATE_RATE then
+        _autoshootElapsed = _autoshootElapsed - AUTOSHOOT_UPDATE_RATE
+        autoShootStep()
+    end
+end)
+
+getgenv().AstraDisconnect = disconnectAll
 end)()
