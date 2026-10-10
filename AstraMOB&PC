@@ -1,153 +1,3 @@
-if not LPH_OBFUSCATED then
-    LPH_JIT = function(...) return ... end
-    LPH_NO_VIRTUALIZE = function(...) return ... end
-end
-
-if setfpscap then setfpscap(180) end
-
-local Shared = _G.Shared or {}
-_G.Shared = Shared
-
-Shared.Astra = {
-    ['General'] = { ['Enabled'] = true },
-
-    ['Performance'] = {
-        ['Enabled']       = true,
-        ['SkipWhenIdle']  = true,
-        ['RequireWeapon'] = true, 
-    },
-
-    ['Aim Assist'] = {
-        ['Bind']            = { ['AimbotKey'] = 'DPadDown' }, -- any Enum.KeyCode name
-        ['ToggleKey']       = nil,            
-        ['LockKey']         = nil,            
-        ['Enabled']     = true,
-        ['SmoothnessX'] = 0.025,
-        ['SmoothnessY'] = 0.025,
-        ['Mode']           = 'Toggle', -- Hold | Toggle | Rage | Mobile
-        ['TargetPriority'] = 'LookDirection', -- Closest | ClosestToCrosshair | LowestHealth | HighestHealth | Farthest | Random | LookDirection | Manual
-        ['Hit Part']       = 'Head',
-        ['JumpOffset']     = 0.210455, 
-        ['FallOffset']     = 1.676, 
-        ['Anti Ground']        = true, 
-        ['Anti Ground Mode']   = 'Ground+Props',  -- 'Ground' | 'Ground+Props' | 'AnyHit'
-        ['EasingStyle'] = {
-            ['Position'] = { 
-                ['In'] = 'Elastic'; 
-                ['Out'] = 'Sine'; 
-            };
-        
-        ['Rotation'] = { 
-            ['In'] = 'Sine'; 
-            ['Out'] = 'Linear'; 
-            ['Duration'] = 0.90; 
-        
-        };
-        },
-        ['GunConfigEnabled'] = true,
-        ['GunConfigs'] = {
-            ['Double Barrel']    = { HitChance = 100 },
-            ['Tactical Shotgun'] = { HitChance = 100 },
-            ['Shotgun']          = { HitChance = 70 },
-            ['Silencer']         = { HitChance = 70 },
-            ['USP']              = { HitChance = 85 },
-            ['Revolver']         = { HitChance = 90 },
-        },
-        ['Prediction'] = {
-            ['Enabled']        = true,
-            ['AutoPrediction'] = false,
-            ['Mode']           = 'Ping Based',
-            ['X']              = 0.220,
-            ['Y']              = 0.116,
-            ['Z']              = 0.174,
-        },
-        ['Checks'] = {
-            ['Visible']    = true,
-            ['Knocked']    = true,
-            ['Forcefield'] = true,
-            ['Friend']     = true,
-        },
-    },
-
-    ['Silent Aim'] = {
-        ['Bind'] = { 
-        ['SilentAimKey'] = 'G' },
-        ['ToggleKey']       = nil,
-        ['LockKey']         = nil,
-        ['Enabled']          = true,
-        ['Mode']             = 'Nearest Point',
-        ['Hit Chance']       = 100,
-        ['Wall Check']       = true,
-        ['Knock Check']      = true,
-        ['Forcefield Check'] = true,
-        ['Friend Check']     = true,
-        ['Anti Curve']        = 14,
-        ['AntiCurveMethod']   = '1:1', -- '3d-Angles' | 'Pixels' | '1:1'
-        ['AntiCurvePixels']   = 50,      
-        ['AntiCurveStrict']   = 2,
-        ['Anti Ground']        = true, 
-        ['Anti Ground Mode']   = 'Ground+Props',
-        ['Anti Aim Viewer']        = true,
-        ['Anti Aim Viewer Method'] = 'Custom',
-        ['Shoot Window']           = 1,
-        ['Prediction'] = {
-            ['Enabled']        = true,
-            ['AutoPrediction'] = false,
-            ['Mode']           = "Regular",
-            ['X']              = 0.1352518,
-            ['Y']              = 0.1352518,
-            ['Z']              = 0,
-        },
-    },
-
-    ['TriggerBot'] = {
-        ['Enabled']          = false,
-        ['Delay']            = 0.03,
-        ['TargetOnly']       = true,
-        ['TargetOnlySource'] = 'Aim Assist',
-        ['ToggleKey']        = 'C',   -- set to nil to make TriggerBot always active when Enabled=true
-        ['CheckVisibility']  = false,
-        ['CheckWeapon']      = true,
-        ['CheckKnocked']     = true,
-    },
-
-    ['YCompensation'] = {
-        ['Enabled']           = true,
-        ['Legitness']         = 'Balanced', -- 'Strict' | 'Balanced' | 'Aggressive'
-        ['JumpMultiplier']    = 1,
-        ['ApplyToSilent']     = true,
-        ['ApplyToAimAssist']  = true,
-    },
-
-    ['StaffWatch'] = {
-        ['Enabled']        = true,
-        ['ManualCheckKey'] = nil,
-        ['Action']         = 'Notify',
-        ['CheckOnLoad']    = true,
-        ['GroupCheck']     = true,
-        ['GroupId']        = 996191638,
-    },
-
-    ['Auto Eat'] = { ['Enabled'] = true, ['Threshold'] = 75 },
-
-    ['Auto Buy'] = {
-        ['Enabled']   = true, 
-        ['Guns'] = true, 
-        ['Food'] = true, 
-        ['Armor'] = true,
-        ['Proximity'] = 20, 
-        ['Cooldown'] = 1,
-        ['Selected Guns']  = {"[Tactical Shotgun]"},
-        ['Selected Foods'] = {"[Taco]", "[Burger]"},  
-    },
-
-    ['Resolver'] = {
-        ['Enabled'] = false, 
-        ['Auto'] = true, 
-        ['Method'] = 'Recalculate', -- 'Recalculate' | 'MoveDirection' / 'LookVector'
-    },
-}
-
 (function()
 
 local cloneref = cloneref or function(obj) return obj end
@@ -239,6 +89,7 @@ local function handleStaff(player, message)
         LocalPlayer:Kick("StaffWatch triggered: " .. player.Name .. " " .. message)
     end
 end
+
 local function perfShouldRunCamera()
     if not currentTarget then return false end
     if not _perfMode.enabled then return true end
@@ -305,26 +156,99 @@ local function getYCompOffsetForTarget(section, char)
     return getYCompOffset(section)
 end
 
+local function SA_getAntiCurve()
+    local ac = getTable('Silent Aim', 'Anti Curve')
+    if type(ac) ~= "table" or not ac.Enabled then return nil end
+    return ac
+end
+
+local function SA_getChecks() return getTable('Silent Aim', 'Checks') or {} end
+local function AA_getChecks() return getTable('Aim Assist', 'Checks') or {} end
+
+local function parseAntiGround(sectionName)
+    local s = Shared.Astra[sectionName]
+    if not s then return false, "Ground+Props" end
+    local checks = s['Checks']
+    if not checks then return false, "Ground+Props" end
+    local ag = checks['Anti Ground']
+    if type(ag) == "table" then
+        return ag.Enabled == true, ag.Mode or "Ground+Props"
+    end
+    return ag == true, "Ground+Props"
+end
+
+local function isFirstPerson()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local head = char:FindFirstChild("Head")
+    if not head then return false end
+    return (Camera.CFrame.Position - head.Position).Magnitude < 1.0
+end
+
+local function passesPerspectiveCheck(sectionName)
+    local s = Shared.Astra[sectionName]
+    if not s then return true end
+    local checks = s['Checks']
+    if not checks then return true end
+
+    local fp = checks['First Person'] == true
+    local tp = checks['Third Person'] == true
+
+    if not fp and not tp then return true end
+
+    local firstPerson = isFirstPerson()
+    if fp and firstPerson   then return true end
+    if tp and not firstPerson then return true end
+    return false
+end
+
+-- Hit Chance reader
+local function SA_getHitChance()
+    local hc = getTable('Silent Aim', 'Hit Chance')
+    if type(hc) == "table" then
+        if not hc.Enabled then return nil end
+        return tonumber(hc.Value) or 100
+    end
+    return tonumber(hc) or 100
+end
+
+-- Gun config reader
+local function getWeaponHitChance(tool)
+    if not tool or not tool:IsA("Tool") then return nil end
+    local gc = getTable('Gun Config')
+    if not gc or not gc.Enabled then return nil end
+    local rawName = tool.Name:gsub("^%[(.*)%]$", "%1")
+    local configs = gc.Configs or {}
+    local cfg = configs[rawName]
+    if cfg and type(cfg.HitChance) == "number" then
+        return math.clamp(cfg.HitChance, 0, 100)
+    end
+    return nil
+end
+
 local function antiCurveShouldSkip(camCF, aimPos)
-    local method = A("Silent Aim", "AntiCurveMethod", "3d-Angles")
+    local ac = SA_getAntiCurve()
+    if not ac then return false end
+
+    local method = ac.Method or "3d-Angles"
     if method == "3d-Angles" then
-        local value = A("Silent Aim", "Anti Curve", 0)
-        if not value or value <= 0 then return false end
+        local value = tonumber(ac.Angle) or 0
+        if value <= 0 then return false end
         local delta = aimPos - camCF.Position
         if delta.Magnitude < 0.001 then return false end
         local dot = math.clamp(camCF.LookVector:Dot(delta.Unit), -1, 1)
         local angle = math.deg(math.acos(dot))
         return angle > value
     elseif method == "Pixels" then
-        local value = tonumber(A("Silent Aim", "AntiCurvePixels", 50)) or 50
+        local value = tonumber(ac.Pixels) or 50
         if value <= 0 then return false end
         local sp, on = Camera:WorldToViewportPoint(aimPos)
         if not on then return true end
         local ch = Camera.ViewportSize * 0.5
         local dist = math.sqrt((sp.X - ch.X)^2 + (sp.Y - ch.Y)^2)
         return dist > value
-    else
-        local tol = tonumber(A("Silent Aim", "AntiCurveStrict", 2)) or 2
+    else -- '1:1'
+        local tol = tonumber(ac.Strict) or 2
         local sp, on = Camera:WorldToViewportPoint(aimPos)
         if not on then return true end
         local ch = Camera.ViewportSize * 0.5
@@ -353,7 +277,8 @@ local function fw_refreshTarget()
     end
     if not part or not part.Parent then return end
 
-    if A("Silent Aim", "Wall Check", false) then
+    local checks = SA_getChecks()
+    if checks.Visible then
         if _fwWallOk == nil or (now - _fwWallTime) > FW_WALL_TTL then
             _fwWallOk   = isVisible(part.Position, targetChar)
             _fwWallTime = now
@@ -892,7 +817,7 @@ local function isFriendCached(plr)
 end
 
 local function isFriend(plr)
-    local checks = getTable('Aim Assist', 'Checks')
+    local checks = AA_getChecks()
     if not (checks and checks.Friend) then
         return false
     end
@@ -942,14 +867,20 @@ end
 local function isWithinShootWindow(char)
     local t = _lastShotTime[char]
     if not t then return false end
-    local window = tonumber(A("Silent Aim", "Shoot Window", 1)) or 1
+    local checks = SA_getChecks()
+    local aav = checks['Anti Aim Viewer']
+    if type(aav) ~= "table" then return false end
+    local window = tonumber(aav['Shoot Window']) or 1
     if window <= 0 then return false end
     return (tick() - t) <= window
 end
 
 local function shouldSkipAntiAimer(char)
+    local checks = SA_getChecks()
+    local aav = checks['Anti Aim Viewer']
+    if type(aav) ~= "table" or not aav.Enabled then return false end
     if not isAntiAimer(char) then return false end
-    local method = A("Silent Aim", "Anti Aim Viewer Method", "Simple")
+    local method = aav.Method or "Simple"
     if method == "Custom" then
         return not isWithinShootWindow(char)
     end
@@ -959,7 +890,7 @@ end
 local validEnemiesCache = {}
 
 local function rebuildValidEnemies()
-    local checks = getTable('Aim Assist', 'Checks') or {}
+    local checks = AA_getChecks()
     local knockCheck = checks.Knocked == true
     local ffCheck = checks.Forcefield == true
 
@@ -1281,6 +1212,10 @@ end
 
 local function GetGroundIntersection(aimPos, targetChar, section)
     section = section or "Aim Assist"
+
+    local agEnabled, agMode = parseAntiGround(section)
+    if not agEnabled then return nil end
+
     local origin = Camera.CFrame.Position
     local direction = aimPos - origin
     if direction.Magnitude < 0.001 then return nil end
@@ -1295,10 +1230,9 @@ local function GetGroundIntersection(aimPos, targetChar, section)
     local hitPart = result.Instance
     if not hitPart or not hitPart:IsA("BasePart") then return nil end
 
-    local mode = A(section, "Anti Ground Mode", "Ground+Props")
-    if mode == "AnyHit" then
+    if agMode == "AnyHit" then
         return result.Position
-    elseif mode == "Ground" then
+    elseif agMode == "Ground" then
         if isGroundLike(hitPart, result.Normal) then return result.Position end
         return nil
     else
@@ -1331,6 +1265,7 @@ function getSilentAimPart(char)
     local allParts = getBodyParts(char)
     if #allParts == 0 then return refs.root end
     local crosshair = silentAimCrosshair()
+    local checks = SA_getChecks()
     if method == "Closest Part" then
         local best, bestDist = nil, math.huge
         for _, part in ipairs(allParts) do
@@ -1346,7 +1281,7 @@ function getSilentAimPart(char)
             end
         end
         if not best then best = allParts[1] end
-        if A("Silent Aim", "Wall Check", false) and not isVisible(best.Position, char) then
+        if checks.Visible and not isVisible(best.Position, char) then
             local vis = findVisiblePart(char, allParts)
             if vis then return vis end
         end
@@ -1356,7 +1291,7 @@ function getSilentAimPart(char)
         local ray = Camera:ViewportPointToRay(crosshair.X, crosshair.Y)
         _silentRayParams.FilterDescendantsInstances = allParts
         local result = Workspace:Raycast(ray.Origin, ray.Direction * 10000, _silentRayParams)
-        if result and (not A("Silent Aim", "Wall Check", false) or isVisible(result.Position, char)) then
+        if result and (not checks.Visible or isVisible(result.Position, char)) then
             return result.Instance
         end
         local best, bestDist = nil, math.huge
@@ -1373,7 +1308,7 @@ function getSilentAimPart(char)
             end
         end
         if not best then best = allParts[1] end
-        if A("Silent Aim", "Wall Check", false) and not isVisible(best.Position, char) then
+        if checks.Visible and not isVisible(best.Position, char) then
             local vis = findVisiblePart(char, allParts)
             if vis then return vis end
         end
@@ -1415,14 +1350,14 @@ local function getResolverVelocity(part)
 
     local resolverOn   = A("Resolver", "Enabled", false) == true
     local resolverAuto = A("Resolver", "Auto",    false) == true
-    local method       = A("Resolver", "Method",  "Recalculate")
+    local method       = A("Resolver", "Method",  "History")
 
     local function useResolver()
-        if method == "Recalculate" then
+        if method == "History" then
             return recalculateVelocity(part)
-        elseif method == "MoveDirection" and observed then
+        elseif method == "Intent" and observed then
             return observed
-        elseif method == "LookVector" and hum then
+        elseif method == "Facing" and hum then
             return part.CFrame.LookVector * math.max(hum.WalkSpeed, 1)
         end
         return nil
@@ -1471,8 +1406,6 @@ local function getResolverVelocity(part)
     return result
 end
 
--- Z PREDICTION FIX: was `vel.Z * sX` (ignored sZ). Now each axis uses its own
--- multiplier, with sZ falling back to sX when not provided.
 local function applyPrediction(section, aimPos, aimPart, char, camPos, sX, sY, sZ)
     sX = sX or 0.115
     sY = sY or 0.115
@@ -1780,18 +1713,6 @@ local function fireSilentAim(aimPos)
     r:FireServer(_capturedAimArg, aimPos)
 end
 
-local function getWeaponHitChance(tool)
-    if not tool or not tool:IsA("Tool") then return nil end
-    if A("Aim Assist", "GunConfigEnabled", true) == false then return nil end
-    local rawName = stripBrackets(tool.Name)
-    local configs = getTable("Aim Assist", "GunConfigs") or {}
-    local cfg = configs[rawName]
-    if cfg and type(cfg.HitChance) == "number" then
-        return math.clamp(cfg.HitChance, 0, 100)
-    end
-    return nil
-end
-
 local function isSilentAimActive()
     if not _silentMaster then return false end
     return A("Silent Aim", "Enabled", false) and _state.silentAimToggle
@@ -1799,6 +1720,7 @@ end
 
 local function prepareSilentAim()
     if not isSilentAimActive() then return end
+
     if _perfMode.enabled and _perfMode.requireWeapon then
         local char = LocalPlayer.Character
         local tool = char and char:FindFirstChildWhichIsA("Tool")
@@ -1809,7 +1731,7 @@ local function prepareSilentAim()
     local currentTool = char and char:FindFirstChildWhichIsA("Tool")
     if currentTool and not isWeapon(currentTool) then return end
 
-    local hitChance = A("Silent Aim", "Hit Chance", 85)
+    local hitChance = SA_getHitChance() or 85
     if currentTool then
         local weaponHit = getWeaponHitChance(currentTool)
         if weaponHit then hitChance = weaponHit end
@@ -1821,10 +1743,11 @@ local function prepareSilentAim()
     if targetPlayer.character ~= targetPlayer.player.Character then return end
     local targetChar = targetPlayer.character
 
-    if A("Silent Aim", "Knock Check", false) and IsKnocked(targetChar) then return end
-    if A("Silent Aim", "Forcefield Check", false) and hasForcefield(targetChar) then return end
-    if A("Silent Aim", "Friend Check", false) and isFriendCached(targetPlayer.player) then return end
-    if A("Silent Aim", "Anti Aim Viewer", false) and shouldSkipAntiAimer(targetChar) then return end
+    local saChecks = SA_getChecks()
+    if saChecks.Knocked and IsKnocked(targetChar) then return end
+    if saChecks.Forcefield and hasForcefield(targetChar) then return end
+    if saChecks.Friend and isFriendCached(targetPlayer.player) then return end
+    if shouldSkipAntiAimer(targetChar) then return end
 
     local refs = getCharRefs(targetChar)
     local hum = refs.humanoid
@@ -1832,14 +1755,14 @@ local function prepareSilentAim()
 
     local aimPart = getSilentAimPart(targetChar)
     if not aimPart then return end
-    if A("Silent Aim", "Wall Check", false) and not isVisible(aimPart.Position, targetChar) then return end
+    if saChecks.Visible and not isVisible(aimPart.Position, targetChar) then return end
 
     local predCfg = getTable('Silent Aim', 'Prediction')
     local aimPos = computeSilentAimPosition(aimPart, predCfg, hitChance)
 
     if antiCurveShouldSkip(Camera.CFrame, aimPos) then return end
 
-    if A("Silent Aim", "Anti Ground", false) then
+    if parseAntiGround("Silent Aim") then
         local groundHit = GetGroundIntersection(aimPos, targetChar, "Silent Aim")
         if groundHit then return end
     end
@@ -1951,8 +1874,9 @@ local function aimbotAcquireTargets()
             _priorityCache.priority = TARGET_PRIORITY_MAP[key] or "closest"
         end
         _priorityCache.activation = aimCfg.Mode or "Hold"
-        _smooth.x = tonumber(aimCfg.SmoothnessX) or 0.25
-        _smooth.y = tonumber(aimCfg.SmoothnessY) or 0.25
+        local sm = aimCfg.Smoothness or {}
+        _smooth.x = tonumber(sm.X) or 0.25
+        _smooth.y = tonumber(sm.Y) or 0.25
 
         local rawKey = aimCfg.Bind and aimCfg.Bind.AimbotKey
         local resolved = rawKey and getKeyCode(rawKey) or nil
@@ -1980,6 +1904,12 @@ local function aimbotAcquireTargets()
         _state.aimbotToggle = false
         _state.lastActivationMode = activation
         clearSticky()
+    end
+
+    if not passesPerspectiveCheck("Aim Assist") then
+        currentTarget = nil
+        SilentTarget = nil
+        return
     end
 
     local shouldLock = false
@@ -2042,7 +1972,7 @@ local function aimbotAcquireTargets()
             end
             if not currentTarget then
                 local spChar = stickyPlayer.Character
-                local checks = getTable('Aim Assist', 'Checks') or {}
+                local checks = AA_getChecks()
                 local skipKnock = checks.Knocked and IsKnocked(spChar)
                 local skipFF = checks.Forcefield and hasForcefield(spChar)
                 if not skipKnock and not skipFF then
@@ -2147,13 +2077,16 @@ local function aimbotUpdateCamera(dt)
     if not currentTarget._lastRayTime or (nowT - currentTarget._lastRayTime) > 1/15 then
         currentTarget._lastRayTime  = nowT
         currentTarget._lastRayOK    = true
-        local checks = getTable('Aim Assist', 'Checks') or {}
+        local checks = AA_getChecks()
         if checks.Visible then
             if not isVisible(aimPos, char) then currentTarget._lastRayOK = false end
         end
-        if currentTarget._lastRayOK and A("Aim Assist", "Anti Ground", false) then
-            local groundHit = GetGroundIntersection(aimPos, char, "Aim Assist")
-            if groundHit then currentTarget._lastRayOK = false end
+        if currentTarget._lastRayOK then
+            local agEnabled = parseAntiGround("Aim Assist")
+            if agEnabled then
+                local groundHit = GetGroundIntersection(aimPos, char, "Aim Assist")
+                if groundHit then currentTarget._lastRayOK = false end
+            end
         end
     end
     if not currentTarget._lastRayOK then return end
@@ -2202,8 +2135,9 @@ local function triggerbotShouldFire()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
 
+    local tbChecks = tb.Checks or {}
     local tool = char:FindFirstChildWhichIsA("Tool")
-    if tb.CheckWeapon and (not tool or not isWeapon(tool)) then return false end
+    if tbChecks.Weapon and (not tool or not isWeapon(tool)) then return false end
 
     local tgt = nil
     if tb.TargetOnly then
@@ -2219,7 +2153,7 @@ local function triggerbotShouldFire()
     end
 
     local tChar = tgt.character
-    if tb.CheckKnocked and IsKnocked(tChar) then return false end
+    if tbChecks.Knocked and IsKnocked(tChar) then return false end
 
     local crosshair = Camera.ViewportSize * 0.5
     local refs = getCharRefs(tChar)
@@ -2232,7 +2166,7 @@ local function triggerbotShouldFire()
     local dist = math.sqrt((sp.X - crosshair.X)^2 + (sp.Y - crosshair.Y)^2)
     if dist > 80 then return false end
 
-    if tb.CheckVisibility and not isVisible(aimPart.Position, tChar) then return false end
+    if tbChecks.Visible and not isVisible(aimPart.Position, tChar) then return false end
 
     return true
 end
